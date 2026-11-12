@@ -168,6 +168,7 @@ h1, h2, h3, h4 { font: inherit; margin: 0; }
 [aria-pressed='true'] > .rk-led,
 [aria-checked='true'] > .rk-led,
 [aria-current='page'] > .rk-led,
+[aria-pressed='true'] > .rk-voice__top > .rk-led,
 .rk-play[data-playing='true'] .rk-led {
   background: radial-gradient(circle at 35% 30%, #d9ffc4, var(--accent) 55%, var(--accent-deep));
   box-shadow: 0 0 6px 1px var(--accent-glow), 0 0 2px var(--accent);
@@ -221,6 +222,7 @@ h1, h2, h3, h4 { font: inherit; margin: 0; }
 
 /* locked or unavailable */
 .rk-key:disabled,
+.rk-key[aria-disabled='true'],
 .rk-toggle:disabled {
   cursor: not-allowed;
   color: var(--text-dim);
@@ -229,7 +231,8 @@ h1, h2, h3, h4 { font: inherit; margin: 0; }
   transform: none;
   opacity: 0.6;
 }
-.rk-key:disabled > .rk-led { opacity: 0.5; }
+.rk-key:disabled > .rk-led,
+.rk-key[aria-disabled='true'] > .rk-led { opacity: 0.5; }
 .rk-fader:disabled, .rk-select:disabled, .rk-note:disabled { opacity: 0.45; cursor: not-allowed; }
 .rk-lcd:has(input:disabled) { opacity: 0.5; }
 
@@ -870,6 +873,47 @@ h1, h2, h3, h4 { font: inherit; margin: 0; }
 }
 .rk-take.is-selected .rk-take__tag { display: inline-flex; }
 
+/* effects */
+.rk-module--fx { flex-basis: 100%; gap: 18px; }
+.rk-fx__knobs { justify-content: flex-start; gap: 16px 36px; }
+/* bipolar ring: lit from the center to the pointer */
+.rk-knob--bipolar .rk-knob__ring {
+  background: conic-gradient(
+    from -135deg,
+    #15120f 0 calc(min(var(--pct), 0.5) * 270deg),
+    #b8ae9f 0 calc(max(var(--pct), 0.5) * 270deg),
+    #15120f 0 270deg,
+    transparent 0
+  );
+}
+.rk-knob--bipolar .rk-knob__dial::before {
+  content: '';
+  position: absolute;
+  top: -6px;
+  left: calc(50% - 1px);
+  width: 2px;
+  height: 4px;
+  background: var(--silk);
+}
+.rk-sends { display: grid; grid-template-columns: repeat(auto-fill, minmax(118px, 1fr)); gap: 12px; }
+.rk-send { display: grid; justify-items: center; gap: 6px; padding: 8px 4px; border: 1px solid #1a1714; border-radius: 3px; background: rgba(0, 0, 0, 0.12); }
+.rk-send__name { font-size: 0.66rem; font-weight: 600; letter-spacing: 0.12em; text-transform: uppercase; color: var(--silk); white-space: nowrap; }
+.rk-send__knobs { display: flex; gap: 10px; }
+/* voice */
+.rk-voice__presets { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 230px), 1fr)); gap: 10px 8px; }
+.rk-voice__cell { align-items: stretch; min-width: 0; }
+.rk-voice__cell > .rk-key { flex: 1 1 auto; min-width: 0; }
+.rk-voice__cell > .rk-help { align-self: center; padding-right: 6px; } /* room for the ? button's negative margin */
+.rk-voice__top { display: inline-flex; align-items: center; gap: 8px; }
+.rk-voice__preset[aria-pressed='true'] { border-color: #1f3a12; }
+.rk-voice__keyrow { gap: 8px 24px; }
+.rk-busy { display: flex; align-items: center; gap: 8px; margin: 0; font-size: 0.85rem; color: var(--text); }
+.rk-busy:empty { display: none; }
+.rk-choice { display: grid; gap: 6px; margin: 0; padding: 0; border: 0; min-width: 0; }
+.rk-choice__opts { display: flex; flex-wrap: wrap; gap: 4px 18px; }
+.rk-choice__opt { display: inline-flex; align-items: center; gap: 8px; min-height: 44px; cursor: pointer; font-size: 0.85rem; }
+.rk-choice__opt:has(.rk-radio:focus-visible) { outline: 2px solid var(--accent); outline-offset: 2px; }
+.rk-choice__opt:has(.rk-radio:disabled) { opacity: 0.5; cursor: not-allowed; }
 /* guide */
 .rk-guide { display: grid; gap: 28px; max-width: 920px; }
 .rk-guide__top { justify-content: space-between; }
@@ -975,6 +1019,8 @@ kbd {
   .rk-row--ruler .rk-row__name .rk-silk { padding-left: 6px; }
   .rk-row--notes .rk-label__term { font-size: 0.62rem; letter-spacing: 0.04em; }
   .rk-step { padding: 30px 12px 14px; }
+  .rk-fx__knobs { justify-content: space-around; gap: 16px 20px; }
+  .rk-sends { grid-template-columns: repeat(auto-fill, minmax(112px, 1fr)); gap: 8px; }
   .rk-guide__list { grid-template-columns: 1fr; gap: 4px; }
   .rk-guide__list dd { margin-bottom: 10px; }
 }
@@ -1002,6 +1048,6 @@ kbd {
 
 @media (forced-colors: active) {
   .rk-pad[aria-pressed='true'], .rk-toggle[aria-pressed='true'] { forced-color-adjust: none; background: Highlight; }
-  .rk-led.is-on, .rk-ladder__seg.is-on { forced-color-adjust: none; background: Highlight; }
+  .rk-led.is-on, .rk-ladder__seg.is-on, [aria-pressed='true'] .rk-led { forced-color-adjust: none; background: Highlight; }
   .rk-mode[aria-current='page'] { border: 2px solid Highlight; }
 }

@@ -17,7 +17,7 @@ const SPACE_OWNERS = 'button, a[href], select, input[type=radio], input[type=che
 
 const VIEW_INFO = {
   beat: { title: 'Beat', intro: 'Build a one-bar loop: tap pads, press Play, change the tempo.' },
-  booth: { title: 'Booth', intro: 'Record yourself over the beat in four steps.' },
+  booth: { title: 'Booth', intro: 'Record yourself over the beat in five steps.' },
   guide: { title: 'Guide', intro: 'Short, plain explanations of every control, plus a few how-tos.' },
 };
 

@@ -28,7 +28,7 @@ export const HELP = {
   advanced: {
     term: 'Advanced',
     sub: 'all controls',
-    text: 'Shows the extra controls for fine-tuning: swing, master and per-sound volume, mute, solo, 808 notes and latency.',
+    text: 'Shows the extra controls for fine-tuning: swing, volumes, mute, solo, 808 notes, effect details, voice tuning and latency.',
   },
   presets: {
     term: 'Presets',
@@ -158,12 +158,117 @@ export const HELP = {
   exportMix: {
     term: 'Export mix',
     sub: 'beat + voice',
-    text: 'Saves the beat plus the picked take as one WAV file: your finished song.',
+    text: 'Saves the beat plus the picked take, with its voice effects, as one WAV file: your finished song.',
   },
   exportVocal: {
     term: 'Export vocal',
     sub: 'voice only',
     text: 'Saves only your voice from the picked take as a WAV file, for mixing in another app.',
+  },
+  vocalFx: {
+    term: 'Vocal file',
+    sub: 'dry or with effects',
+    text: 'Choose whether Export vocal saves your voice with the Voice effects from step 4 or untouched (dry).',
+  },
+  effects: {
+    term: 'Effects',
+    sub: 'sound of the beat',
+    text: 'Adds room, echo and color to the whole beat; the effects are saved with the pattern and are in your exports.',
+  },
+  fxSpace: {
+    term: 'Space',
+    sub: 'reverb',
+    text: 'Puts the beat in a room: turn it up for a bigger, wetter sound, or down for dry and close.',
+  },
+  fxEcho: {
+    term: 'Echo',
+    sub: 'delay',
+    text: 'Repeats the sounds in time with the beat, fading out each time.',
+  },
+  fxEchoTime: {
+    term: 'Echo time',
+    sub: 'gap between repeats',
+    text: 'Sets how far apart the echoes are: short is an eighth note, dotted is the bouncy three-sixteenths, long is a full beat.',
+  },
+  fxFilter: {
+    term: 'Filter',
+    sub: 'darker or thinner',
+    text: 'Turn left to cut the highs for a dark, muffled sound, right to cut the lows for a thin one; the middle is off.',
+  },
+  fxDrive: {
+    term: 'Drive',
+    sub: 'grit',
+    text: 'Pushes the beat into gentle distortion so it sounds warmer and dirtier as you turn it up.',
+  },
+  fxSends: {
+    term: 'Sends',
+    sub: 'per sound',
+    text: 'Sets how much of each sound goes into Space and Echo, for example echo on the snare only.',
+  },
+  voice: {
+    term: 'Voice',
+    sub: 'vocal effects',
+    text: 'Pick a sound for your recorded voice; it is used when you play takes back and in the mix export.',
+  },
+  voiceClean: {
+    term: 'Clean',
+    sub: 'no effect',
+    text: 'Your voice as recorded, just cleaned of low rumble and level-matched.',
+  },
+  voiceRobot: {
+    term: 'Robot',
+    sub: 'hard autotune',
+    text: 'Snaps your voice to the nearest note instantly for the classic robotic autotune sound.',
+  },
+  voiceTuned: {
+    term: 'Tuned',
+    sub: 'soft autotune',
+    text: 'Gently pulls your voice toward the right notes so it sounds in tune but still natural.',
+  },
+  voiceRadio: {
+    term: 'Radio',
+    sub: 'phone voice',
+    text: 'Makes your voice thin and narrow, like it comes out of an old radio or a phone.',
+  },
+  voiceHall: {
+    term: 'Hall',
+    sub: 'big room',
+    text: 'Places your voice in a large room with a long reverb tail.',
+  },
+  voiceLofi: {
+    term: 'Lo-fi',
+    sub: 'dusty tape',
+    text: 'Makes your voice darker and a little gritty, like an old tape.',
+  },
+  voiceKey: {
+    term: 'Key',
+    sub: 'home note',
+    text: 'The note the tuning is built on; leave it on A if you use the 808 notes as they come.',
+  },
+  voiceScale: {
+    term: 'Scale',
+    sub: 'minor or major',
+    text: 'Chooses which notes the tuning snaps to: minor sounds darker, major sounds brighter.',
+  },
+  voiceTune: {
+    term: 'Tune',
+    sub: 'amount',
+    text: 'How strongly your voice is pulled to the notes of the key: 0% is off, 100% is fully tuned.',
+  },
+  voiceRetune: {
+    term: 'Retune speed',
+    sub: 'robotic to natural',
+    text: 'How fast the tuning grabs each note: low values jump instantly like a robot, high values glide naturally.',
+  },
+  voiceReverb: {
+    term: 'Voice reverb',
+    sub: 'room',
+    text: 'Adds room sound to your voice only.',
+  },
+  voiceEcho: {
+    term: 'Voice echo',
+    sub: 'delay',
+    text: 'Adds a soft echo to your whole voice that repeats in time with the beat.',
   },
 };
 
@@ -185,12 +290,20 @@ export const GUIDE_SECTIONS = [
   {
     id: 'booth',
     title: 'Recording in the booth',
-    keys: ['modeBooth', 'input', 'mic', 'level', 'monitoring', 'takeBars', 'countIn', 'record', 'takes', 'takePlay', 'takeDelete', 'previewStop', 'exportMix', 'exportVocal'],
+    keys: ['modeBooth', 'input', 'mic', 'level', 'monitoring', 'takeBars', 'countIn', 'record', 'takes', 'takePlay', 'takeDelete', 'previewStop', 'exportMix', 'exportVocal', 'vocalFx'],
+  },
+  {
+    id: 'effects',
+    title: 'Effects and voice',
+    keys: ['effects', 'fxSpace', 'fxEcho', 'voice', 'voiceClean', 'voiceRobot', 'voiceTuned', 'voiceRadio', 'voiceHall', 'voiceLofi'],
   },
   {
     id: 'advanced',
     title: 'Advanced controls',
-    keys: ['advanced', 'swing', 'master', 'volume', 'mute', 'solo', 'bassNotes', 'latency', 'latencyOffset'],
+    keys: [
+      'advanced', 'swing', 'master', 'volume', 'mute', 'solo', 'bassNotes', 'fxEchoTime', 'fxFilter', 'fxDrive', 'fxSends',
+      'voiceKey', 'voiceScale', 'voiceTune', 'voiceRetune', 'voiceReverb', 'voiceEcho', 'latency', 'latencyOffset',
+    ],
   },
 ];
 
@@ -222,6 +335,15 @@ export const GUIDE_RECIPES = [
       'Press Export mix to save beat and voice as one WAV file.',
       'Press Export vocal if you only want your voice.',
       'For the beat alone, use Export beat in BEAT.',
+    ],
+  },
+  {
+    title: 'Get the robot voice',
+    steps: [
+      'In BOOTH, record a take (steps 1 and 2).',
+      'Open step 4, Voice, and press Robot.',
+      'Wait until "Tuning your take" is gone, then press Play on your take.',
+      'Happy with it? Export the mix in step 5.',
     ],
   },
 ];

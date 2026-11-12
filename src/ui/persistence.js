@@ -1,6 +1,7 @@
 // Pattern autosave (localStorage) and JSON export/import.
 import { parsePattern, serializePattern } from '../audio/pattern.js';
 
+// Key kept so saved beats keep loading; the pattern format version lives inside the saved pattern.
 export const STORAGE_KEY = 'rythmik:pattern:v2';
 export const EXPORT_FILENAME = 'rythmik-pattern.json';
 export const MAX_IMPORT_BYTES = 256 * 1024;

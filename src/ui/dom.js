@@ -39,6 +39,18 @@ export function placeNear(anchor, box, gap = 8) {
   box.style.top = `${Math.round(top)}px`;
 }
 
+/**
+ * Hard: real `disabled` (not available at all). Soft: aria-disabled, so a busy
+ * button keeps focus and the click handler ignores it.
+ */
+export function setUnavailable(btn, { hard = false, soft = false } = {}) {
+  btn.disabled = hard;
+  if (!hard && soft) btn.setAttribute('aria-disabled', 'true');
+  else btn.removeAttribute('aria-disabled');
+}
+
+export const isUnavailable = (btn) => btn.disabled || btn.getAttribute('aria-disabled') === 'true';
+
 export function isTyping(target) {
   if (!(target instanceof HTMLElement)) return false;
   if (target.isContentEditable) return true;

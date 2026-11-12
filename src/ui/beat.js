@@ -1,24 +1,67 @@
 import { TRACKS, STEPS, BASS_NOTES } from '../audio/engine.js';
 import { PRESETS } from '../audio/presets.js';
+import { emptyPattern, normalizePattern } from '../audio/pattern.js';
 import { renderBeat, EXPORT_BARS } from '../audio/export.js';
 import { encodeWav } from '../audio/wav.js';
 import { createKnob } from './knob.js';
 import { downloadPattern, readPatternFile } from './persistence.js';
 import { PRESET_INFO } from './help.js';
 import { helpLabel } from './helptip.js';
-import { el, silk, led, downloadBlob } from './dom.js';
+import { el, silk, led, downloadBlob, setUnavailable } from './dom.js';
 
 const SWING_MAX = 0.6; // knob shows 0..100%
 const PRESET_ORDER = ['afroBass', 'trap', 'boomBap', 'empty'];
 const DEFAULT_EXPORT_BARS = 4;
 const LOW_MASTER = 0.1;
 
-export function hiddenSettingsNote({ mixed = false, lowMaster = false } = {}) {
+const ECHO_TIMES = [
+  { value: '1/8', text: 'Short (1/8)' },
+  { value: '3/16', text: 'Dotted (3/16)' },
+  { value: '1/4', text: 'Long (1/4)' },
+];
+
+/** Filter knob runs -100..100: left darker, right thinner, center off. */
+export function filterText(v) {
+  const n = Math.round(v);
+  if (n === 0) return 'Off';
+  return n < 0 ? `Dark ${-n}%` : `Thin ${n}%`;
+}
+
+// Effect settings a beginner can get without Advanced: a fresh pattern and every preset.
+function baselineFx() {
+  try {
+    return [emptyPattern(), ...Object.values(PRESETS).map((p) => p.pattern)].map((p) => normalizePattern(p).fx || {});
+  } catch {
+    return [{}];
+  }
+}
+
+const near = (a, b) => Math.abs((Number(a) || 0) - (Number(b) || 0)) < 0.005;
+const sameSends = (a = {}, b = {}) =>
+  [...new Set([...Object.keys(a), ...Object.keys(b)])].every(
+    (id) => near(a[id]?.reverb, b[id]?.reverb) && near(a[id]?.echo, b[id]?.echo),
+  );
+
+/** Advanced-only effects that match no baseline: subset of ['filter', 'drive', 'sends']. */
+export function changedHiddenFx(fx, baselines = baselineFx()) {
+  if (!fx) return [];
+  const out = [];
+  if (!baselines.some((b) => near(fx.filter, b.filter))) out.push('filter');
+  if (!baselines.some((b) => near(fx.drive, b.drive))) out.push('drive');
+  if (!baselines.some((b) => sameSends(fx.sends, b.sends))) out.push('sends');
+  return out;
+}
+
+const FX_PARTS = { filter: 'Filter is on', drive: 'Drive is on', sends: 'effect sends are changed' };
+
+export function hiddenSettingsNote({ mixed = false, lowMaster = false, fx = [] } = {}) {
   const parts = [];
   if (lowMaster) parts.push('master volume is low');
   if (mixed) parts.push('some sounds are muted or soloed');
+  for (const k of fx) if (FX_PARTS[k]) parts.push(FX_PARTS[k]);
   if (!parts.length) return '';
-  return `Some Advanced settings are active: ${parts.join(' and ')}. Turn on Advanced to change ${parts.length > 1 ? 'them' : 'it'}.`;
+  const list = parts.length > 1 ? `${parts.slice(0, -1).join(', ')} and ${parts[parts.length - 1]}` : parts[0];
+  return `Some Advanced settings are active: ${list}. Turn on Advanced to change ${parts.length > 1 ? 'them' : 'it'}.`;
 }
 
 export function presetLine(key) {
@@ -35,6 +78,7 @@ export function presetLine(key) {
 export function mountBeat(engine, { status, loadWithUndo, afterAudio = () => {} }) {
   const tracks = TRACKS.map((t) => ({ ...t }));
   const bassNoteName = new Map(BASS_NOTES.map((n) => [n.midi, n.name]));
+  const fxBaselines = baselineFx();
 
   // presets
   const presetButtons = PRESET_ORDER.filter((key) => PRESETS[key]).map((key) =>
@@ -206,6 +250,66 @@ export function mountBeat(engine, { status, loadWithUndo, afterAudio = () => {} 
     seqScroll,
   ]);
 
+  // effects
+  // label must use id; the knob is named by it
+  const fxKnob = (label, id, opts) => {
+    const knob = createKnob({ labelledBy: id, showReadout: true, value: 0, defaultValue: 0, ...opts });
+    return { label, knob, cell: el('div', { class: 'rk-knobcell' }, [label, knob.el]) };
+  };
+  const space = fxKnob(helpLabel('fxSpace', { id: 'rk-fx-space-label' }), 'rk-fx-space-label', { label: 'Space', onInput: (v) => engine.setFx('reverb', v / 100) });
+  const echo = fxKnob(helpLabel('fxEcho', { id: 'rk-fx-echo-label' }), 'rk-fx-echo-label', { label: 'Echo', onInput: (v) => engine.setFx('echo', v / 100) });
+  const filter = fxKnob(helpLabel('fxFilter', { id: 'rk-fx-filter-label' }), 'rk-fx-filter-label', {
+    label: 'Filter',
+    min: -100,
+    max: 100,
+    format: filterText,
+    onInput: (v) => engine.setFx('filter', v / 100),
+  });
+  filter.knob.el.classList.add('rk-knob--bipolar');
+  filter.cell.classList.add('rk-adv');
+  const drive = fxKnob(helpLabel('fxDrive', { id: 'rk-fx-drive-label' }), 'rk-fx-drive-label', { label: 'Drive', onInput: (v) => engine.setFx('drive', v / 100) });
+  drive.cell.classList.add('rk-adv');
+
+  const echoTimeSelect = el(
+    'select',
+    { id: 'rk-fx-echotime', class: 'rk-select' },
+    ECHO_TIMES.map((t) => el('option', { value: t.value, text: t.text })),
+  );
+  echoTimeSelect.addEventListener('change', () => engine.setFx('echoTime', echoTimeSelect.value));
+
+  // Per-sound sends: one cell per sound with a Space and an Echo knob.
+  const sendKnobs = new Map();
+  const sendCells = tracks.map((track) => {
+    const mk = (kind, word) =>
+      createKnob({
+        label: `${track.name} ${word} send`,
+        caption: word,
+        size: 'sm',
+        value: 0,
+        defaultValue: 0,
+        onInput: (v) => engine.setTrackSend(track.id, kind, v / 100),
+      });
+    const rev = mk('reverb', 'Space');
+    const ech = mk('echo', 'Echo');
+    sendKnobs.set(track.id, { reverb: rev, echo: ech });
+    return el('div', { class: 'rk-send', role: 'group', 'aria-label': `${track.name} sends` }, [
+      el('span', { class: 'rk-send__name', 'aria-hidden': 'true', text: track.name }),
+      el('div', { class: 'rk-send__knobs' }, [rev.el, ech.el]),
+    ]);
+  });
+
+  const fxNote = el('p', { class: 'rk-hint', text: 'Space adds room, Echo repeats hits in time with the beat.' });
+  const fxModule = el('section', { class: 'rk-module rk-module--col rk-module--fx', 'aria-labelledby': 'rk-fx-h' }, [
+    helpLabel('effects', { tag: 'h3', id: 'rk-fx-h', className: 'rk-module__head' }),
+    el('div', { class: 'rk-knobs rk-fx__knobs' }, [space.cell, echo.cell, filter.cell, drive.cell]),
+    el('div', { class: 'rk-field rk-adv' }, [helpLabel('fxEchoTime', { forId: 'rk-fx-echotime' }), echoTimeSelect]),
+    el('div', { class: 'rk-subpanel rk-adv' }, [
+      helpLabel('fxSends'),
+      el('div', { class: 'rk-sends' }, sendCells),
+    ]),
+    fxNote,
+  ]);
+
   // export beat
   const barsSelect = el(
     'select',
@@ -236,6 +340,7 @@ export function mountBeat(engine, { status, loadWithUndo, afterAudio = () => {} 
   const view = el('div', { class: 'rk-beat' }, [
     el('div', { class: 'rk-band' }, [presetModule, grooveModule]),
     sequencer,
+    el('div', { class: 'rk-band' }, [fxModule]),
     el('div', { class: 'rk-band' }, [exportModule, fileModule]),
   ]);
 
@@ -276,8 +381,23 @@ export function mountBeat(engine, { status, loadWithUndo, afterAudio = () => {} 
     });
     if (typeof p.swing === 'number') swingKnob.setValue(Math.round((p.swing / SWING_MAX) * 100));
     if (typeof p.master === 'number') masterKnob.setValue(Math.round(p.master * 100));
+    const fx = p.fx || {};
+    const pct = (x) => Math.round((Number(x) || 0) * 100);
+    space.knob.setValue(pct(fx.reverb));
+    echo.knob.setValue(pct(fx.echo));
+    filter.knob.setValue(pct(fx.filter));
+    drive.knob.setValue(pct(fx.drive));
+    if (ECHO_TIMES.some((t) => t.value === fx.echoTime)) echoTimeSelect.value = fx.echoTime;
+    for (const [id, k] of sendKnobs) {
+      k.reverb.setValue(pct(fx.sends?.[id]?.reverb));
+      k.echo.setValue(pct(fx.sends?.[id]?.echo));
+    }
     // Beginners can't see these controls; say what is in effect instead of resetting it.
-    const t = hiddenSettingsNote({ mixed: anyMixed, lowMaster: typeof p.master === 'number' && p.master < LOW_MASTER });
+    const t = hiddenSettingsNote({
+      mixed: anyMixed,
+      lowMaster: typeof p.master === 'number' && p.master < LOW_MASTER,
+      fx: changedHiddenFx(p.fx, fxBaselines),
+    });
     if (hiddenNote.textContent !== t) hiddenNote.textContent = t;
     hiddenNote.hidden = !t;
   }
@@ -333,7 +453,8 @@ export function mountBeat(engine, { status, loadWithUndo, afterAudio = () => {} 
   wavBtn.addEventListener('click', async () => {
     if (rendering) return;
     rendering = true;
-    wavBtn.disabled = barsSelect.disabled = true;
+    setUnavailable(wavBtn, { soft: true });
+    barsSelect.disabled = true;
     wavBtn.setAttribute('aria-busy', 'true');
     wavLabel.textContent = 'Rendering…';
     setWavMsg('Rendering…');
@@ -348,10 +469,10 @@ export function mountBeat(engine, { status, loadWithUndo, afterAudio = () => {} 
       setWavMsg('Export failed.', true);
     }
     rendering = false;
-    wavBtn.disabled = barsSelect.disabled = false;
+    setUnavailable(wavBtn);
+    barsSelect.disabled = false;
     wavBtn.removeAttribute('aria-busy');
     wavLabel.textContent = 'Export beat (WAV)';
-    if (document.activeElement === document.body) wavBtn.focus();
   });
 
   // Roving tabindex: the grid is a single tab stop, arrows move between pads.

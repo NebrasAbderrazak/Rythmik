@@ -1,7 +1,9 @@
 import { createBooth } from '../audio/booth.js';
 import { encodeWav } from '../audio/wav.js';
+import { VOICE_PRESETS, KEYS, SCALES } from '../audio/voice.js';
+import { createKnob } from './knob.js';
 import { helpLabel, helpTip } from './helptip.js';
-import { el, silk, led, isTyping, downloadBlob } from './dom.js';
+import { el, silk, led, isTyping, downloadBlob, setUnavailable, isUnavailable } from './dom.js';
 
 const BAR_OPTIONS = [2, 4, 8, 16];
 const OFFSET_MIN = -200;
@@ -18,6 +20,10 @@ const MIC_MESSAGES = {
   'mic-busy': 'Mic in use by another app or blocked by Windows privacy settings.',
 };
 const INPUT_KEY = 'rythmik:input';
+const VOICE_KEY = 'rythmik:voice';
+const VOICE_ORDER = ['clean', 'robot', 'tuned', 'radio', 'hall', 'lofi'];
+const VOICE_HELP = { clean: 'voiceClean', robot: 'voiceRobot', tuned: 'voiceTuned', radio: 'voiceRadio', hall: 'voiceHall', lofi: 'voiceLofi' };
+const PREPARE_DELAY = 250; // ms after the last voice change before tuning starts
 const SILENT_MS = 3000;
 
 function loadInput() {
@@ -35,6 +41,42 @@ function saveInput(id) {
   } catch {
     // storage blocked: the choice just isn't remembered
   }
+}
+
+function loadVoice() {
+  try {
+    const v = JSON.parse(localStorage.getItem(VOICE_KEY) || 'null');
+    return v && typeof v === 'object' && !Array.isArray(v) ? v : null;
+  } catch {
+    return null;
+  }
+}
+
+function saveVoice(v) {
+  try {
+    localStorage.setItem(VOICE_KEY, JSON.stringify(v));
+  } catch {
+    // storage blocked: settings last for this visit only
+  }
+}
+
+/** Preset id whose settings all match `voice`, or null for a custom mix. */
+export function matchVoicePreset(voice, presets = VOICE_PRESETS) {
+  if (!voice) return null;
+  for (const id of VOICE_ORDER) {
+    const s = presets[id]?.settings;
+    if (!s) continue;
+    const same = Object.entries(s).every(([k, want]) =>
+      typeof want === 'number' ? Math.abs((Number(voice[k]) || 0) - want) < 0.005 : voice[k] === want,
+    );
+    if (same) return id;
+  }
+  return null;
+}
+
+export function retuneText(v) {
+  const word = v < 34 ? 'Robotic' : v < 67 ? 'Smooth' : 'Natural';
+  return `${word} ${v}%`;
 }
 
 function formatMs(ms) {
@@ -85,6 +127,9 @@ export function mountBooth(engine, { onLockChange = () => {}, isActive = () => t
   let countIn = typeof booth.countIn === 'boolean' ? booth.countIn : true;
   let offsetMs = Number.isFinite(booth.latencyOffsetMs) ? booth.latencyOffsetMs : 0;
   let busy = false;
+  let tuning = false;
+  let prepareTimer = 0;
+  let busyText = '';
   let cancelRequested = false;
   let meterLevel = 0;
   let litSegments = -1;
@@ -205,16 +250,83 @@ export function mountBooth(engine, { onLockChange = () => {}, isActive = () => t
     el('div', { class: 'rk-btnrow' }, [stopBtn, helpTip('previewStop')]),
   ]);
 
-  // 4 export
+  // 4 voice
+  const voiceButtons = new Map();
+  const voicePresetCells = VOICE_ORDER.filter((id) => VOICE_PRESETS[id]).map((id) => {
+    const p = VOICE_PRESETS[id];
+    const btn = el('button', { type: 'button', class: 'rk-key rk-preset rk-voice__preset', 'aria-pressed': 'false', 'data-voice': id }, [
+      el('span', { class: 'rk-voice__top' }, [led(), el('span', { class: 'rk-preset__name', text: p.name })]),
+      el('span', { class: 'rk-preset__desc', text: p.description }),
+    ]);
+    btn.addEventListener('click', () => {
+      booth.setVoicePreset(id);
+      voiceChanged();
+    });
+    voiceButtons.set(id, btn);
+    return el('span', { class: 'rk-pair rk-voice__cell' }, [btn, helpTip(VOICE_HELP[id])]);
+  });
+
+  const keySelect = el('select', { id: 'rk-voice-key', class: 'rk-select' }, KEYS.map((k) => el('option', { value: k, text: k })));
+  const scaleSelect = el(
+    'select',
+    { id: 'rk-voice-scale', class: 'rk-select' },
+    SCALES.map((s) => el('option', { value: s, text: s.charAt(0).toUpperCase() + s.slice(1) })),
+  );
+  keySelect.addEventListener('change', () => setVoice({ key: keySelect.value }));
+  scaleSelect.addEventListener('change', () => setVoice({ scale: scaleSelect.value }));
+
+  const voiceKnob = (label, id, setting, opts = {}) => {
+    const knob = createKnob({
+      label: setting,
+      labelledBy: id,
+      showReadout: true,
+      value: 0,
+      defaultValue: 0,
+      onInput: (v) => setVoice({ [setting]: v / 100 }),
+      ...opts,
+    });
+    return { knob, cell: el('div', { class: 'rk-knobcell' }, [label, knob.el]) };
+  };
+  const tuneK = voiceKnob(helpLabel('voiceTune', { id: 'rk-voice-tune-label' }), 'rk-voice-tune-label', 'tune');
+  const retuneK = voiceKnob(helpLabel('voiceRetune', { id: 'rk-voice-retune-label' }), 'rk-voice-retune-label', 'retune', { format: retuneText });
+  const vReverbK = voiceKnob(helpLabel('voiceReverb', { id: 'rk-voice-reverb-label' }), 'rk-voice-reverb-label', 'reverb');
+  const vEchoK = voiceKnob(helpLabel('voiceEcho', { id: 'rk-voice-echo-label' }), 'rk-voice-echo-label', 'echo');
+
+  const voiceBusyLine = el('p', { class: 'rk-busy', role: 'status' });
+  const voiceStep = step(4, 'Voice', 'rk-step-voice', helpTip('voice'));
+  const voicePanel = el('section', { class: 'rk-step rk-step--wide', 'aria-labelledby': 'rk-step-voice' }, [
+    voiceStep.head,
+    el('div', { class: 'rk-voice__presets', role: 'group', 'aria-label': 'Voice presets' }, voicePresetCells),
+    voiceBusyLine,
+    el('div', { class: 'rk-subpanel rk-adv' }, [
+      el('div', { class: 'rk-btnrow rk-voice__keyrow' }, [
+        el('div', { class: 'rk-field' }, [helpLabel('voiceKey', { forId: 'rk-voice-key' }), keySelect]),
+        el('div', { class: 'rk-field' }, [helpLabel('voiceScale', { forId: 'rk-voice-scale' }), scaleSelect]),
+      ]),
+      el('div', { class: 'rk-knobs' }, [tuneK.cell, retuneK.cell, vReverbK.cell, vEchoK.cell]),
+    ]),
+  ]);
+
+  // 5 export
   const mixBtn = el('button', { type: 'button', class: 'rk-key', text: 'Export mix (WAV)' });
   const vocalBtn = el('button', { type: 'button', class: 'rk-key', text: 'Export vocal (WAV)' });
+  const vocalWetRadio = el('input', { type: 'radio', id: 'rk-vocal-wet', name: 'rk-vocal-fx', value: 'wet', class: 'rk-radio', checked: true });
+  const vocalDryRadio = el('input', { type: 'radio', id: 'rk-vocal-dry', name: 'rk-vocal-fx', value: 'dry', class: 'rk-radio' });
+  const vocalChoice = el('fieldset', { class: 'rk-choice', 'aria-labelledby': 'rk-vocal-fx-label' }, [
+    helpLabel('vocalFx', { id: 'rk-vocal-fx-label' }),
+    el('span', { class: 'rk-choice__opts' }, [
+      el('label', { class: 'rk-choice__opt', for: 'rk-vocal-wet' }, [vocalWetRadio, el('span', { text: 'With voice effects' })]),
+      el('label', { class: 'rk-choice__opt', for: 'rk-vocal-dry' }, [vocalDryRadio, el('span', { text: 'Dry' })]),
+    ]),
+  ]);
   const exportEmpty = el('p', { class: 'rk-empty', text: 'Record a take, pick it in step 3, then export it here.' });
   const exportMsg = el('p', { class: 'rk-msg', role: 'status' });
-  const exportStep = step(4, 'Export', 'rk-step-export');
+  const exportStep = step(5, 'Export', 'rk-step-export');
   const exportPanel = el('section', { class: 'rk-step', 'aria-labelledby': 'rk-step-export' }, [
     exportStep.head,
     exportEmpty,
     el('div', { class: 'rk-btnrow' }, [mixBtn, helpTip('exportMix')]),
+    vocalChoice,
     el('div', { class: 'rk-btnrow' }, [vocalBtn, helpTip('exportVocal')]),
     exportMsg,
   ]);
@@ -224,7 +336,7 @@ export function mountBooth(engine, { onLockChange = () => {}, isActive = () => t
       silk('Tip', { 'aria-hidden': 'true' }),
       el('span', { text: ' Wear headphones so the beat does not leak into the mic.' }),
     ]),
-    el('div', { class: 'rk-steps' }, [micPanel, recPanel, takesPanel, exportPanel]),
+    el('div', { class: 'rk-steps' }, [micPanel, recPanel, takesPanel, voicePanel, exportPanel]),
   ]);
 
   // Take rows are keyed by id so focus survives re-renders.
@@ -234,7 +346,9 @@ export function mountBooth(engine, { onLockChange = () => {}, isActive = () => t
     const radioId = `rk-take-${take.id}`;
     const radio = el('input', { type: 'radio', id: radioId, name: 'rk-booth-take', value: take.id, class: 'rk-radio' });
     radio.addEventListener('change', () => {
-      if (radio.checked) booth.selectTake(take.id);
+      if (!radio.checked) return;
+      booth.selectTake(take.id);
+      prepareSelected();
     });
     const name = el('span', { class: 'rk-take__name', text: take.name });
     const info = el('span', { class: 'rk-take__info' });
@@ -244,7 +358,9 @@ export function mountBooth(engine, { onLockChange = () => {}, isActive = () => t
       led(),
       el('span', { text: 'Play' }),
     ]);
-    playBtn.addEventListener('click', () => startPreview(take));
+    playBtn.addEventListener('click', () => {
+      if (!isUnavailable(playBtn)) startPreview(take);
+    });
     const delBtn = el('button', { type: 'button', class: 'rk-key', 'aria-label': `Delete ${take.name}`, text: 'Delete' });
     delBtn.addEventListener('click', () => deleteTake(take.id));
     const li = el('li', { class: 'rk-take' }, [label, el('div', { class: 'rk-btnrow' }, [playBtn, delBtn])]);
@@ -274,7 +390,7 @@ export function mountBooth(engine, { onLockChange = () => {}, isActive = () => t
       row.radio.checked = selected;
       row.li.classList.toggle('is-selected', selected);
       row.playBtn.firstElementChild.classList.toggle('is-on', booth.previewTakeId === take.id);
-      row.playBtn.disabled = recording || busy;
+      setUnavailable(row.playBtn, { hard: recording, soft: busy || tuning });
       row.delBtn.disabled = recording || busy;
     });
     noTakes.hidden = takes.length > 0;
@@ -302,6 +418,7 @@ export function mountBooth(engine, { onLockChange = () => {}, isActive = () => t
   }
 
   function renderControls() {
+    tuning = !!booth.voiceBusy;
     const state = booth.state;
     const idle = state === 'idle';
     const micOpen = !!booth.micOpen;
@@ -348,10 +465,64 @@ export function mountBooth(engine, { onLockChange = () => {}, isActive = () => t
     takesStep.led.classList.toggle('is-on', booth.previewTakeId != null);
 
     const hasTake = takes.some((t) => t.id === booth.selectedTakeId);
-    mixBtn.disabled = vocalBtn.disabled = busy || !idle || !hasTake;
+    for (const b of [mixBtn, vocalBtn]) setUnavailable(b, { hard: !idle || !hasTake, soft: busy || tuning });
+    vocalWetRadio.disabled = vocalDryRadio.disabled = busy;
     exportEmpty.hidden = hasTake;
 
+    renderVoice();
+
     updateLoop();
+  }
+
+  function renderVoice() {
+    const v = booth.voice || {};
+    const current = VOICE_PRESETS[v.preset] ? v.preset : matchVoicePreset(v);
+    for (const [id, btn] of voiceButtons) btn.setAttribute('aria-pressed', String(id === current));
+    if (KEYS.includes(v.key)) keySelect.value = v.key;
+    if (SCALES.includes(v.scale)) scaleSelect.value = v.scale;
+    const pct = (x) => Math.round((Number(x) || 0) * 100);
+    tuneK.knob.setValue(pct(v.tune));
+    retuneK.knob.setValue(pct(v.retune));
+    vReverbK.knob.setValue(pct(v.reverb));
+    vEchoK.knob.setValue(pct(v.echo));
+    const t = tuning ? 'Tuning your take…' : '';
+    if (t !== busyText) {
+      busyText = t;
+      voiceBusyLine.replaceChildren(...(t ? [led('is-on is-blink'), el('span', { text: t })] : []));
+    }
+    voiceStep.led.classList.toggle('is-on', tuning);
+    voiceStep.led.classList.toggle('is-blink', tuning);
+  }
+
+  function setVoice(partial) {
+    booth.setVoiceSettings(partial);
+    voiceChanged();
+  }
+
+  // Save, then tune the picked take in the background so playback and export are ready.
+  function voiceChanged() {
+    saveVoice(booth.voice);
+    render();
+    clearTimeout(prepareTimer);
+    prepareTimer = setTimeout(prepareSelected, PREPARE_DELAY);
+  }
+
+  async function prepareSelected() {
+    prepareTimer = 0;
+    const id = booth.selectedTakeId;
+    if (id == null || !(booth.takes || []).some((t) => t.id === id)) return;
+    await prepare(id);
+  }
+
+  async function prepare(id) {
+    const pending = booth.prepareVoice(id);
+    render();
+    try {
+      await pending;
+    } catch (err) {
+      console.error('Rythmik: voice', err);
+    }
+    render();
   }
 
   function setProgress(t) {
@@ -473,7 +644,10 @@ export function mountBooth(engine, { onLockChange = () => {}, isActive = () => t
         console.error('Rythmik: record', err);
       }
     }
-    if (take) setMicMsg(`${take.name} recorded. Play it in step 3.`);
+    if (take) {
+      setMicMsg(`${take.name} recorded. Play it in step 3.`);
+      prepareSelected();
+    }
     else if (cancelRequested) setMicMsg('Recording cancelled.');
     else setMicMsg('Recording stopped, no take kept.');
     cancelRequested = false;
@@ -489,6 +663,7 @@ export function mountBooth(engine, { onLockChange = () => {}, isActive = () => t
 
   async function startPreview(take) {
     try {
+      await prepare(take.id);
       await booth.playTake(take.id, { withBeat: true });
     } catch (err) {
       console.error('Rythmik: preview', err);
@@ -515,14 +690,19 @@ export function mountBooth(engine, { onLockChange = () => {}, isActive = () => t
 
   async function exportTake(kind) {
     const take = (booth.takes || []).find((t) => t.id === booth.selectedTakeId);
-    if (!take || busy) return;
-    const returnFocus = document.activeElement;
+    if (!take || busy || tuning) return;
+    const btn = kind === 'mix' ? mixBtn : vocalBtn;
     busy = true;
+    btn.setAttribute('aria-busy', 'true');
     setExportMsg('Rendering…');
     render();
+    const dry = kind === 'vocal' && vocalDryRadio.checked;
     try {
-      const buffer = kind === 'mix' ? await booth.renderMix(take.id) : await booth.renderVocal(take.id);
-      const filename = `rythmik-${kind}-take-${takeNumber(take)}.wav`;
+      if (!dry) await booth.prepareVoice(take.id);
+      const buffer = kind === 'mix'
+        ? await booth.renderMix(take.id)
+        : await booth.renderVocal(take.id, { processed: !dry });
+      const filename = `rythmik-${kind}${dry ? '-dry' : ''}-take-${takeNumber(take)}.wav`;
       downloadBlob(encodeWav(buffer, { bitDepth: 16 }), filename, 'audio/wav');
       setExportMsg(`Saved ${filename}.`);
     } catch (err) {
@@ -530,8 +710,8 @@ export function mountBooth(engine, { onLockChange = () => {}, isActive = () => t
       setExportMsg('Export failed.', true);
     }
     busy = false;
+    btn.removeAttribute('aria-busy');
     render();
-    if (returnFocus instanceof HTMLElement && !returnFocus.disabled) returnFocus.focus();
   }
 
   function paintMeter() {
@@ -598,8 +778,12 @@ export function mountBooth(engine, { onLockChange = () => {}, isActive = () => t
     render();
   });
   inputSelect.addEventListener('change', changeInput);
-  mixBtn.addEventListener('click', () => exportTake('mix'));
-  vocalBtn.addEventListener('click', () => exportTake('vocal'));
+  mixBtn.addEventListener('click', () => {
+    if (!isUnavailable(mixBtn)) exportTake('mix');
+  });
+  vocalBtn.addEventListener('click', () => {
+    if (!isUnavailable(vocalBtn)) exportTake('vocal');
+  });
 
   function onKey(e) {
     if (e.ctrlKey || e.metaKey || e.altKey || e.repeat || e.defaultPrevented) return;
@@ -625,6 +809,16 @@ export function mountBooth(engine, { onLockChange = () => {}, isActive = () => t
   booth.setBars(bars);
   booth.setCountIn(countIn);
   booth.setLatencyOffset(offsetMs);
+  const savedVoice = loadVoice();
+  if (savedVoice) {
+    try {
+      if (VOICE_PRESETS[savedVoice.preset]) booth.setVoicePreset(savedVoice.preset);
+      const { preset, ...settings } = savedVoice;
+      booth.setVoiceSettings(settings);
+    } catch (err) {
+      console.error('Rythmik: saved voice', err);
+    }
+  }
   const saved = loadInput();
   if (saved) booth.setInputDevice(saved).catch(() => {}); // mic is closed: only remembered
   const unsubscribe = booth.onChange(render);
@@ -642,6 +836,7 @@ export function mountBooth(engine, { onLockChange = () => {}, isActive = () => t
     },
     destroy() {
       document.removeEventListener('keydown', onKey);
+      clearTimeout(prepareTimer);
       unsubscribe?.();
       unsubDevices?.();
       if (rafId) cancelAnimationFrame(rafId);

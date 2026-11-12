@@ -81,8 +81,8 @@ describe('help dictionary', () => {
     .map((f) => readFileSync(join(uiDir, f), 'utf8'))
     .join('\n');
   const used = new Set([...source.matchAll(/\bhelp(?:Tip|Label)\(\s*'([\w-]+)'/g)].map((m) => m[1]));
-  // Mode buttons look their keys up from a map.
-  for (const m of source.matchAll(/MODE_HELP = \{([^}]+)\}/g)) for (const k of m[1].matchAll(/'(\w+)'/g)) used.add(k[1]);
+  // Mode and voice preset buttons look their keys up from a map.
+  for (const m of source.matchAll(/\b[A-Z]+_HELP = \{([^}]+)\}/g)) for (const k of m[1].matchAll(/: '(\w+)'/g)) used.add(k[1]);
 
   it('finds the help calls in the UI', () => {
     expect(used.size).toBeGreaterThan(15);
@@ -106,7 +106,10 @@ describe('help dictionary', () => {
     'modeBeat', 'modeBooth', 'advanced', 'play', 'tempo', 'presets', 'undo', 'pads', 'sounds',
     'swing', 'master', 'volume', 'mute', 'solo', 'bassNotes', 'exportBeat', 'beatBars', 'patternFile',
     'input', 'mic', 'monitoring', 'level', 'takeBars', 'countIn', 'record', 'latency', 'latencyOffset',
-    'takes', 'takePlay', 'takeDelete', 'previewStop', 'exportMix', 'exportVocal',
+    'takes', 'takePlay', 'takeDelete', 'previewStop', 'exportMix', 'exportVocal', 'vocalFx',
+    'effects', 'fxSpace', 'fxEcho', 'fxEchoTime', 'fxFilter', 'fxDrive', 'fxSends',
+    'voice', 'voiceClean', 'voiceRobot', 'voiceTuned', 'voiceRadio', 'voiceHall', 'voiceLofi',
+    'voiceKey', 'voiceScale', 'voiceTune', 'voiceRetune', 'voiceReverb', 'voiceEcho',
   ];
 
   it('every control id has help text and a ? in the UI', () => {
@@ -134,6 +137,7 @@ describe('help dictionary', () => {
 
   it('describes every preset and has recipes', () => {
     for (const key of Object.keys(PRESETS)) expect(PRESET_INFO[key], key).toBeTruthy();
-    expect(GUIDE_RECIPES.length).toBeGreaterThanOrEqual(3);
+    expect(GUIDE_RECIPES.length).toBeGreaterThanOrEqual(4);
+    expect(GUIDE_RECIPES.some((r) => r.title === 'Get the robot voice')).toBe(true);
   });
 });

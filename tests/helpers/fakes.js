@@ -1,6 +1,7 @@
 // Stand-ins for the engine and booth so the UI can mount without Web Audio.
 import { vi } from 'vitest';
 import { normalizePattern, emptyPattern } from '../../src/audio/pattern.js';
+import { VOICE_PRESETS } from '../../src/audio/voice.js';
 
 export function fakeEngine() {
   let pattern = normalizePattern(emptyPattern(100));
@@ -39,6 +40,18 @@ export function fakeEngine() {
       pattern.master = v;
       emitPattern();
     },
+    setFx: vi.fn((name, v) => {
+      pattern.fx = { ...(pattern.fx || {}), [name]: v };
+      emitPattern();
+      return v;
+    }),
+    setTrackSend: vi.fn((t, kind, v) => {
+      const fx = (pattern.fx ||= {});
+      fx.sends ||= {};
+      fx.sends[t] = { ...(fx.sends[t] || {}), [kind]: v };
+      emitPattern();
+      return v;
+    }),
     start: vi.fn(() => {
       engine.isPlaying = true;
       emitState();
@@ -79,6 +92,20 @@ export function fakeBooth() {
     inputLabel: '',
     lastFallback: false,
     listeners: [],
+    voiceBusy: false,
+    voiceState: { ...VOICE_PRESETS.clean.settings, key: 'A', scale: 'minor' },
+    get voice() {
+      return { ...booth.voiceState };
+    },
+    setVoicePreset: vi.fn((id) => {
+      booth.voiceState = { ...booth.voiceState, ...VOICE_PRESETS[id].settings };
+    }),
+    setVoiceSettings: vi.fn((partial) => {
+      booth.voiceState = { ...booth.voiceState, ...partial };
+    }),
+    prepareVoice: vi.fn(() => Promise.resolve()),
+    renderMix: vi.fn(() => Promise.resolve(null)),
+    renderVocal: vi.fn(() => Promise.resolve(null)),
     setBars() {},
     setCountIn() {},
     setLatencyOffset(ms) {
