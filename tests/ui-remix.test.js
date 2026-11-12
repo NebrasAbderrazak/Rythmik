@@ -13,7 +13,8 @@ vi.mock('../src/audio/remix.js', async (importOriginal) => {
 });
 
 import { mountApp } from '../src/ui/app.js';
-import { formatBpm, formatTime, remixFileName, loadRemixSettings } from '../src/ui/remix.js';
+import { formatTime, remixFileName, loadRemixSettings } from '../src/ui/remix.js';
+import { formatBpm } from '../src/ui/format.js';
 import { backingText } from '../src/ui/booth.js';
 
 let engine;
@@ -81,6 +82,14 @@ describe('empty state', () => {
     expect(button('Load a song', view()).closest('[hidden]')).toBeNull();
   });
 
+  it('names the length limit when a song is too long', async () => {
+    shared.remix.load.mockRejectedValueOnce(new Error('too-long'));
+    chooseFile(new File(['x'], 'long.mp3', { type: 'audio/mpeg' }));
+    await tick();
+    expect(view().querySelector('.rk-msg.is-error').textContent).toMatch(/longer than 10 minutes/);
+    expect(view().textContent).toMatch(/up to 10 minutes/);
+  });
+
   it('rejects files that are not audio before decoding', async () => {
     shared.remix.load.mockClear();
     chooseFile(new File(['x'], 'notes.txt', { type: 'text/plain' }));
@@ -127,6 +136,20 @@ describe('presets and speed keys', () => {
     expect(pressed().map((b) => b.dataset.speed)).toEqual(['normal']);
   });
 
+  it('Nightcore is a one-click key next to Slowed + reverb and Original', () => {
+    const keys = [...view().querySelectorAll('[data-remix-preset]')].map((b) => b.dataset.remixPreset);
+    expect(keys).toEqual(['slowedReverb', 'nightcore', 'original']);
+    const nightcore = view().querySelector('[data-remix-preset=nightcore]');
+    expect(nightcore.textContent).toBe('Nightcore');
+    expect(nightcore.parentElement.querySelector('[data-help=remixNightcore]')).toBeTruthy();
+    nightcore.click();
+    expect(shared.remix.applyPreset).toHaveBeenLastCalledWith('nightcore');
+    expect(nightcore.getAttribute('aria-pressed')).toBe('true');
+    expect(view().querySelector('[data-remix-preset=slowedReverb]').getAttribute('aria-pressed')).toBe('false');
+    view().querySelector('[data-remix-preset=original]').click();
+    expect(nightcore.getAttribute('aria-pressed')).toBe('false');
+  });
+
   it('saves settings when they change', () => {
     view().querySelector('[data-speed=slowed]').click();
     expect(loadRemixSettings()).toMatchObject({ speed: 0.85, reverb: 0 });
@@ -156,6 +179,53 @@ describe('loop handles', () => {
     expect(shared.remix.setLoopEnabled).toHaveBeenLastCalledWith(false);
     expect(sw.getAttribute('aria-checked')).toBe('false');
     sw.click();
+  });
+
+  it('a handle key turns looping back on', () => {
+    const sw = button('Loop', view());
+    sw.click();
+    expect(sw.getAttribute('aria-checked')).toBe('false');
+    key(view().querySelector('[role=slider][aria-label="Loop start"]'), 'ArrowRight');
+    expect(shared.remix.setLoopEnabled).toHaveBeenLastCalledWith(true);
+    expect(sw.getAttribute('aria-checked')).toBe('true');
+  });
+
+  it('Start here and End here mark the loop without a pointer', () => {
+    const r = shared.remix;
+    r.setLoop(0, 120);
+    const at = vi.spyOn(r, 'getPosition');
+    at.mockReturnValue(30);
+    button('Start here', view()).click();
+    expect(r.setLoop).toHaveBeenLastCalledWith(30, 120);
+    at.mockReturnValue(90);
+    button('End here', view()).click();
+    expect(r.setLoop).toHaveBeenLastCalledWith(30, 90);
+    // an end before the start moves the start out of the way
+    at.mockReturnValue(10);
+    button('End here', view()).click();
+    expect(r.setLoop).toHaveBeenLastCalledWith(0, 10);
+    // with Loop off, marking turns it on
+    button('Loop', view()).click();
+    at.mockReturnValue(50);
+    button('Start here', view()).click();
+    expect(r.setLoop).toHaveBeenLastCalledWith(50, 120);
+    expect(r.loop.enabled).toBe(true);
+    expect(view().querySelector('[data-help=remixMarkStart]')).toBeTruthy();
+    expect(view().querySelector('[data-help=remixMarkEnd]')).toBeTruthy();
+    at.mockRestore();
+    r.setLoop(0, 120);
+  });
+
+  it('after Stop, Start here marks where the song stopped', () => {
+    const r = shared.remix;
+    button('Play song', view()).click();
+    const at = vi.spyOn(r, 'getPosition').mockReturnValue(45);
+    button('Stop song', view()).click();
+    at.mockRestore();
+    expect(r.getPosition()).toBeNull();
+    button('Start here', view()).click();
+    expect(r.setLoop).toHaveBeenLastCalledWith(45, 120);
+    r.setLoop(0, 120);
   });
 });
 

@@ -4,7 +4,7 @@ import { emptyPattern, normalizePattern } from '../audio/pattern.js';
 import { renderBeat, EXPORT_BARS } from '../audio/export.js';
 import { encodeWav } from '../audio/wav.js';
 import { createKnob } from './knob.js';
-import { downloadPattern, readPatternFile } from './persistence.js';
+import { downloadPattern, readPatternFile, EXPORT_FILENAME } from './persistence.js';
 import { PRESET_INFO } from './help.js';
 import { helpLabel } from './helptip.js';
 import { el, silk, led, downloadBlob, setUnavailable } from './dom.js';
@@ -425,7 +425,7 @@ export function mountBeat(engine, { status, loadWithUndo, afterAudio = () => {} 
   exportBtn.addEventListener('click', () => {
     try {
       downloadPattern(engine.getPattern());
-      status.show('Saved rythmik-pattern.json.');
+      status.show(`Saved ${EXPORT_FILENAME}.`);
     } catch (err) {
       console.error(err);
       status.show('Could not export the pattern.', { error: true });

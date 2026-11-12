@@ -9,7 +9,6 @@ export const TOUR_STEPS = [
   { anchor: 'remix', title: 'Remix a song', text: 'Open REMIX to load your own song, make a slowed + reverb version and rap over that instead.' },
 ];
 
-/** anchors: { [name]: HTMLElement }. onEnd runs when the tour finishes or is skipped. */
 const FOCUSABLE = 'a[href],button:not([disabled]),input:not([disabled]),select:not([disabled]),[tabindex="0"]';
 
 // Focus the first candidate that is still in the page and not inside a hidden view.
@@ -25,6 +24,7 @@ function focusFirst(candidates) {
   return null;
 }
 
+/** anchors: { [name]: HTMLElement }. onEnd runs when the tour finishes or is skipped. */
 export function createTour({ anchors, onEnd = () => {} }) {
   let index = -1;
   let card = null;

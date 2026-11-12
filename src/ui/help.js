@@ -305,10 +305,25 @@ export const HELP = {
     sub: 'repeat a part',
     text: 'When on, the song repeats the marked part over and over; when off, it plays to the end.',
   },
+  remixMarkStart: {
+    term: 'Start here',
+    sub: 'loop start',
+    text: 'Sets the loop start to where the song is playing now, or where it last stopped, and turns Loop on.',
+  },
+  remixMarkEnd: {
+    term: 'End here',
+    sub: 'loop end',
+    text: 'Sets the loop end to where the song is playing now, or where it last stopped, and turns Loop on.',
+  },
   remixSlowedReverb: {
     term: 'Slowed + reverb',
     sub: 'one click',
     text: 'Slows the song down, adds a big room and softens the highs for the classic dreamy sound.',
+  },
+  remixNightcore: {
+    term: 'Nightcore',
+    sub: 'one click',
+    text: 'Speeds the song up so it plays faster and higher, with a touch of room.',
   },
   remixOriginal: {
     term: 'Original',
@@ -416,7 +431,8 @@ export const GUIDE_SECTIONS = [
     id: 'remix',
     title: 'Remixing a song',
     keys: [
-      'modeRemix', 'remixLoad', 'remixRemove', 'remixDeck', 'remixWave', 'remixLoop', 'remixSlowedReverb', 'remixOriginal',
+      'modeRemix', 'remixLoad', 'remixRemove', 'remixDeck', 'remixWave', 'remixLoop', 'remixMarkStart', 'remixMarkEnd',
+      'remixSlowedReverb', 'remixNightcore', 'remixOriginal',
       'remixSpeed', 'remixSpace', 'remixMuffle', 'remixBass', 'remixVolume', 'remixSongBpm', 'remixTap', 'remixHalfDouble',
       'remixBeatSync', 'remixExport', 'remixExportRange', 'recordOver',
     ],
@@ -476,14 +492,10 @@ export const GUIDE_RECIPES = [
     steps: [
       'Go to REMIX and press Load a song, or drop an audio file on the deck.',
       'Press Slowed + reverb, then Play song to hear it.',
-      'Drag across the waveform to loop the part you want to rap over.',
+      'Mark the part you want to rap over: drag across the waveform, or press Start here and End here while it plays.',
       'Check Song tempo shows a number; if not, press Tap along with the song.',
       'In BOOTH, set Record over to Remix and record your takes.',
       'Export the mix in step 5, or Export remix in REMIX for the song alone.',
     ],
   },
 ];
-
-export function helpText(key) {
-  return HELP[key]?.text ?? '';
-}

@@ -112,7 +112,7 @@ describe('help dictionary', () => {
     'voice', 'voiceClean', 'voiceRobot', 'voiceTuned', 'voiceRadio', 'voiceHall', 'voiceLofi',
     'voiceKey', 'voiceScale', 'voiceTune', 'voiceRetune', 'voiceReverb', 'voiceEcho',
     'modeRemix', 'recordOver', 'remixLoad', 'remixRemove', 'remixDeck', 'remixWave', 'remixLoop',
-    'remixSlowedReverb', 'remixOriginal', 'remixSpeed', 'remixSpeedFine', 'remixKeepPitch',
+    'remixMarkStart', 'remixMarkEnd', 'remixSlowedReverb', 'remixNightcore', 'remixOriginal', 'remixSpeed', 'remixSpeedFine', 'remixKeepPitch',
     'remixSpace', 'remixMuffle', 'remixBass', 'remixVolume', 'remixSongBpm', 'remixTap',
     'remixManualBpm', 'remixHalfDouble', 'remixBeatSync', 'remixExport', 'remixExportRange',
   ];

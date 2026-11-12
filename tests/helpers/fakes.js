@@ -131,6 +131,7 @@ export function fakeBooth() {
     getMicStatus: () => ({ open: booth.micOpen }),
     getInputLevel: () => 0,
     getRecordProgress: () => null,
+    record: vi.fn(() => Promise.resolve(null)),
     cancel: vi.fn(),
     dispose() {},
   };
@@ -140,6 +141,16 @@ export function fakeBooth() {
 export function polyfillDom() {
   globalThis.requestAnimationFrame ??= (cb) => setTimeout(() => cb(performance.now()), 0);
   globalThis.cancelAnimationFrame ??= (id) => clearTimeout(id);
+  // jsdom cannot navigate, so a download link's click would only log "Not implemented".
+  const proto = HTMLAnchorElement.prototype;
+  if (!proto.click.isDownloadStub) {
+    const click = proto.click;
+    proto.click = function () {
+      if (this.hasAttribute('download')) return;
+      click.call(this);
+    };
+    proto.click.isDownloadStub = true;
+  }
 }
 
 export const tick = (ms = 20) => new Promise((r) => setTimeout(r, ms));
@@ -225,6 +236,7 @@ export function fakeRemix() {
       const s = {
         original: { speed: 1, keepPitch: false, reverb: 0, muffle: 0, bass: 0 },
         slowedReverb: { speed: 0.85, keepPitch: false, reverb: 0.5, muffle: 0.2, bass: 0.15 },
+        nightcore: { speed: 1.25, keepPitch: false, reverb: 0.1, muffle: 0, bass: 0 },
       }[id];
       remix.update(s);
     }),

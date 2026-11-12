@@ -3,7 +3,7 @@ import { encodeWav } from '../audio/wav.js';
 import { VOICE_PRESETS, KEYS, SCALES } from '../audio/voice.js';
 import { createKnob } from './knob.js';
 import { helpLabel, helpTip } from './helptip.js';
-import { formatBpm } from './remix.js';
+import { formatBpm } from './format.js';
 import { el, silk, led, isTyping, downloadBlob, setUnavailable, isUnavailable } from './dom.js';
 
 const BAR_OPTIONS = [2, 4, 8, 16];
@@ -12,6 +12,8 @@ const OFFSET_MAX = 200;
 const METER_DECAY = 0.88; // per frame, so short peaks stay visible
 const METER_SEGMENTS = 12;
 const METER_FLOOR_DB = -48;
+const MAX_TAKES = 12; // same limit as the booth engine
+const TAKES_FULL = `You have ${MAX_TAKES} takes. Delete one to record another.`;
 
 const MIC_MESSAGES = {
   'mic-denied':
@@ -150,6 +152,7 @@ export function mountBooth(engine, { remix = null, onLockChange = () => {}, isAc
   let switching = false;
   let diagText = '';
   let progressText = '';
+  let announced = '';
 
   // 1 mic
   const inputSelect = el('select', { id: 'rk-booth-input', class: 'rk-select rk-booth__input' }, [
@@ -207,6 +210,8 @@ export function mountBooth(engine, { remix = null, onLockChange = () => {}, isAc
     [recordLed, recordLabel],
   );
   const progress = el('p', { class: 'rk-booth__progress', 'aria-hidden': 'true' });
+  // The visible counter changes every beat; this one speaks once per bar.
+  const progressAnnounce = el('p', { class: 'rk-visually-hidden', role: 'status' });
   const recordEmpty = el('p', { class: 'rk-empty', text: 'Enable the mic in step 1 first.' });
 
   const offsetRange = el('input', {
@@ -263,6 +268,7 @@ export function mountBooth(engine, { remix = null, onLockChange = () => {}, isAc
     el('div', { class: 'rk-field' }, [helpLabel('takeBars', { forId: 'rk-booth-bars' }), barsSelect]),
     el('div', { class: 'rk-btnrow' }, [countInBtn, helpTip('countIn')]),
     el('div', { class: 'rk-btnrow' }, [recordBtn, helpTip('record'), progress]),
+    progressAnnounce,
     offsetNote,
     latencyBlock,
   ]);
@@ -484,7 +490,10 @@ export function mountBooth(engine, { remix = null, onLockChange = () => {}, isAc
     recordEmpty.hidden = micOpen || !idle;
     recStep.led.classList.toggle('is-on', !idle);
     recStep.led.classList.toggle('is-blink', state === 'count-in');
-    if (idle) setProgress('');
+    if (idle) {
+      setProgress('');
+      announce('');
+    }
 
     autoOut.textContent = `${Math.round(booth.autoLatencyMs || 0)} ms`;
     totalOut.textContent = `${Math.round(booth.latencyMs || 0)} ms`;
@@ -596,6 +605,12 @@ export function mountBooth(engine, { remix = null, onLockChange = () => {}, isAc
     progress.textContent = t;
   }
 
+  function announce(t) {
+    if (t === announced) return;
+    announced = t;
+    progressAnnounce.textContent = t;
+  }
+
   function setMsg(node, t, error = false) {
     node.textContent = t;
     node.classList.toggle('is-error', error);
@@ -697,6 +712,10 @@ export function mountBooth(engine, { remix = null, onLockChange = () => {}, isAc
   async function startRecording() {
     if (booth.state !== 'idle' || !booth.micOpen) return;
     cancelRequested = false;
+    if (booth.takesFull) {
+      setMicMsg(TAKES_FULL, true);
+      return;
+    }
     setMicMsg(countIn ? 'Count-in, then recording.' : 'Recording.');
     let take;
     try {
@@ -704,6 +723,12 @@ export function mountBooth(engine, { remix = null, onLockChange = () => {}, isAc
       render();
       take = await pending;
     } catch (err) {
+      if (err?.message === 'too-many-takes') {
+        setMicMsg(TAKES_FULL, true);
+        cancelRequested = false;
+        render();
+        return;
+      }
       if (!cancelRequested) {
         setMicMsg('Recording failed.', true);
         console.error('Rythmik: record', err);
@@ -796,11 +821,10 @@ export function mountBooth(engine, { remix = null, onLockChange = () => {}, isAc
     }
     if (booth.state !== 'idle') {
       const p = booth.getRecordProgress() || {}; // null once the take ends
-      setProgress(
-        p.countIn || booth.state === 'count-in'
-          ? `Count-in${p.beat ? ` ${p.beat}` : ''}`
-          : `Recording bar ${Math.max(1, p.bar || 1)} of ${p.totalBars || bars}`,
-      );
+      const counting = p.countIn || booth.state === 'count-in';
+      const bar = `Recording bar ${Math.max(1, p.bar || 1)} of ${p.totalBars || bars}`;
+      setProgress(counting ? `Count-in${p.beat ? ` ${p.beat}` : ''}` : bar);
+      announce(counting ? 'Count-in' : bar);
     }
     updateLoop();
   }
@@ -888,9 +912,9 @@ export function mountBooth(engine, { remix = null, onLockChange = () => {}, isAc
   }
   const saved = loadInput();
   if (saved) booth.setInputDevice(saved).catch(() => {}); // mic is closed: only remembered
-  const unsubscribe = booth.onChange(render);
-  const unsubDevices = booth.onDevicesChange(onDevices);
-  const unsubRemix = remix?.onChange(render);
+  booth.onChange(render);
+  booth.onDevicesChange(onDevices);
+  remix?.onChange(render);
   render();
   refreshInputs();
 
@@ -907,15 +931,5 @@ export function mountBooth(engine, { remix = null, onLockChange = () => {}, isAc
       return booth.backing === 'remix' ? 'remix' : 'beat';
     },
     cancel: cancelRecording,
-    destroy() {
-      document.removeEventListener('keydown', onKey);
-      clearTimeout(prepareTimer);
-      unsubscribe?.();
-      unsubDevices?.();
-      unsubRemix?.();
-      if (rafId) cancelAnimationFrame(rafId);
-      booth.cancel();
-      booth.dispose();
-    },
   };
 }

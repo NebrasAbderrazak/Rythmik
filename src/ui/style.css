@@ -9,8 +9,9 @@
   --pad-a: #3c362f;
   --pad-b: #4a4239;
   --line: #5a5147;
+  --edge: #8a8074;
   --text: #f0e9dd;
-  --text-dim: #b5ab9b;
+  --text-dim: #c4bbab;
   --silk: #cfc5b4;
   --accent: #7ed957;
   --accent-deep: #4f9a33;
@@ -80,6 +81,30 @@ h1, h2, h3, h4 { font: inherit; margin: 0; }
   white-space: nowrap;
   border: 0;
 }
+
+/* skip link: off screen until focused, then a key on the panel's top edge */
+.rk-skip {
+  position: absolute;
+  top: 8px;
+  left: var(--bleed);
+  z-index: 70;
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+  padding: 0 14px;
+  border: 1px solid var(--edge);
+  border-radius: 4px;
+  background: var(--recess);
+  color: var(--text);
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  text-decoration: none;
+  transform: translateY(calc(-100% - 40px));
+}
+.rk-skip:focus { transform: none; }
+.rk-body:focus { outline: none; }
 
 #app {
   max-width: 1320px;
@@ -293,7 +318,7 @@ h1, h2, h3, h4 { font: inherit; margin: 0; }
   place-items: center;
   width: 26px;
   height: 26px;
-  border: 1px solid var(--line);
+  border: 1px solid var(--edge);
   border-radius: 50%;
   background: var(--recess);
 }
@@ -376,7 +401,7 @@ h1, h2, h3, h4 { font: inherit; margin: 0; }
   min-height: 44px;
   max-width: 100%;
   padding: 0 10px;
-  border: 1px solid #000;
+  border: 1px solid var(--edge);
   border-radius: 3px;
   background: linear-gradient(180deg, #0d0b0a, var(--recess));
   box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.7), 0 1px 0 rgba(255, 240, 220, 0.06);
@@ -384,6 +409,8 @@ h1, h2, h3, h4 { font: inherit; margin: 0; }
 .rk-select option { background: #1b1815; color: var(--text); }
 
 .rk-hint, .rk-msg, .rk-note-line, .rk-empty { margin: 0; font-size: 0.82rem; color: var(--text-dim); }
+/* messages can carry file names of any length */
+.rk-hint, .rk-msg, .rk-busy, .rk-busy > span, .rk-statusline__msg, .rk-statusline__text, .rk-take__info { min-width: 0; overflow-wrap: anywhere; }
 .rk-msg:empty { display: none; }
 .rk-msg.is-error, .rk-statusline__msg.is-error { color: var(--text); font-weight: 700; }
 .rk-msg.is-error::before, .rk-statusline__msg.is-error .rk-statusline__text::before { content: '! '; font-weight: 700; }
@@ -484,6 +511,7 @@ h1, h2, h3, h4 { font: inherit; margin: 0; }
   -moz-appearance: textfield;
   appearance: textfield;
 }
+.rk-lcd:has(.rk-lcd__input) { border-color: var(--edge); }
 .rk-lcd__input::-webkit-outer-spin-button,
 .rk-lcd__input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
 .rk-lcd__unit { font-size: 0.65rem; font-weight: 600; letter-spacing: 0.16em; color: var(--text-dim); }
@@ -550,13 +578,14 @@ h1, h2, h3, h4 { font: inherit; margin: 0; }
 .rk-statusline__audio { display: inline-flex; align-items: center; gap: 8px; }
 .rk-statusline__msg { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; margin-left: auto; color: var(--text); }
 .rk-statusline__text:empty { display: none; }
+.rk-statusline__audio > span:last-child { min-width: 0; }
 .rk-statusline__actions { display: inline-flex; align-items: center; gap: 2px; }
 .rk-undo {
   position: relative;
   min-height: 44px;
   min-width: 64px;
   padding: 0 12px;
-  border: 1px solid var(--line);
+  border: 1px solid var(--edge);
   border-radius: 3px;
   background: transparent;
   font-size: 0.72rem;
@@ -569,6 +598,7 @@ h1, h2, h3, h4 { font: inherit; margin: 0; }
 /* views */
 .rk-view__head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 14px; margin: 8px 2px 22px; }
 .rk-view__title .rk-silk { font-size: 0.85rem; letter-spacing: 0.24em; color: var(--text); }
+.rk-view__title { scroll-margin-top: 96px; }
 .rk-view__title:focus { outline: none; }
 .rk-view__title:focus-visible { outline: 2px solid var(--accent); outline-offset: 4px; }
 .rk-view__intro { margin: 0; font-size: 0.85rem; color: var(--text-dim); }
@@ -691,7 +721,7 @@ h1, h2, h3, h4 { font: inherit; margin: 0; }
   width: 100%;
   min-height: var(--pad);
   padding: 0 10px;
-  border: 1px solid var(--line);
+  border: 1px solid var(--edge);
   border-radius: 3px;
   background: transparent;
   text-align: left;
@@ -786,7 +816,7 @@ h1, h2, h3, h4 { font: inherit; margin: 0; }
   width: var(--pad);
   height: var(--pad);
   padding: 0;
-  border: 1px solid #000;
+  border: 1px solid var(--edge);
   border-radius: 3px;
   background:
     linear-gradient(45deg, transparent 50%, var(--text-dim) 50%) right 5px bottom 5px / 5px 5px no-repeat,
@@ -931,10 +961,10 @@ h1, h2, h3, h4 { font: inherit; margin: 0; }
 }
 .rk-drop__btns { justify-content: center; }
 .rk-drop__or { margin: 0; font-size: 0.85rem; color: var(--text); }
-.rk-remix__song { display: grid; gap: 12px; min-width: 0; }
-.rk-remix__strip { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px 16px; }
+.rk-remix__song { display: grid; grid-template-columns: minmax(0, 1fr); gap: 12px; min-width: 0; }
+.rk-remix__strip { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px 16px; min-width: 0; }
 .rk-remix__title { display: flex; align-items: center; gap: 10px; min-width: 0; flex: 1 1 220px; }
-.rk-remix__name { margin: 0; min-width: 0; font-weight: 700; overflow-wrap: anywhere; }
+.rk-remix__name { margin: 0; min-width: 0; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .rk-remix__time { font-size: 0.82rem; font-variant-numeric: tabular-nums; color: var(--text-dim); }
 .rk-deck { min-width: 150px; }
 .rk-remix__loopinfo { margin: 0; font-size: 0.82rem; font-variant-numeric: tabular-nums; color: var(--text-dim); }
@@ -1100,6 +1130,8 @@ kbd {
 /* small screens */
 @media (max-width: 760px) {
   :root { --name-w: 92px; --group-gap: 8px; --bleed: 14px; }
+  /* blending a full-screen layer costs every scroll frame on phones; plain alpha looks the same */
+  body::before { mix-blend-mode: normal; opacity: 0.04; }
   #app { padding: 0; }
   .rk-machine { border-radius: 0; border-left: 0; border-right: 0; padding: 18px var(--bleed) 16px; }
   .rk-logo { font-size: 1.7rem; }
@@ -1148,6 +1180,16 @@ kbd {
 @media (max-width: 420px) {
   .rk-presets { grid-template-columns: 1fr; }
   .rk-preset { min-height: 52px; }
+  /* compact strip: the BPM number stays, the fader goes */
+  .rk-transport { padding-top: 6px; padding-bottom: 6px; }
+  .rk-play { min-height: 44px; }
+  .rk-tempo { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; }
+  .rk-tempo__fader { display: none; }
+}
+
+/* landscape phones: the strip scrolls away instead of covering the screen */
+@media (max-height: 500px) {
+  .rk-transport { position: static; }
 }
 
 @media (prefers-reduced-motion: reduce) {

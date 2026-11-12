@@ -1,9 +1,10 @@
-import { SPEED_PRESETS, REMIX_PRESETS, MIN_SPEED, MAX_SPEED } from '../audio/remix.js';
+import { SPEED_PRESETS, REMIX_PRESETS, MIN_SPEED, MAX_SPEED, MAX_SONG_SECONDS } from '../audio/remix.js';
 import { createTapTempo } from '../audio/tempo.js';
 import { encodeWav } from '../audio/wav.js';
 import { createKnob } from './knob.js';
 import { helpLabel, helpTip } from './helptip.js';
 import { getDefaultStorage } from './persistence.js';
+import { formatBpm } from './format.js';
 import { el, led, downloadBlob, setUnavailable, isUnavailable } from './dom.js';
 
 export const REMIX_KEY = 'rythmik:remix';
@@ -14,6 +15,7 @@ const MIN_SONG_BPM = 40;
 const MAX_SONG_BPM = 220;
 // Same limit as the deck; checked here too so a huge file is refused before it is read.
 const MAX_FILE_BYTES = 200 * 1024 * 1024;
+const MAX_MINUTES = Math.round(MAX_SONG_SECONDS / 60);
 
 const HANDLE_STEP = 0.1; // seconds per arrow press
 const HANDLE_BIG_STEP = 1; // with Shift
@@ -27,7 +29,7 @@ const BOOLEAN_SETTINGS = ['keepPitch', 'beatSync'];
 
 const LOAD_ERRORS = {
   'decode-failed': 'Could not read that file as audio. Try an MP3, WAV, OGG or M4A file.',
-  'too-long': 'That song is longer than 15 minutes. Pick a shorter file or trim it first.',
+  'too-long': `That song is longer than ${MAX_MINUTES} minutes. Pick a shorter file or trim it first.`,
   busy: 'Still loading the last file. Try again in a moment.',
   'too-large': 'That file is over 200 MB, too large to load in the browser.',
   'not-audio': 'That is not an audio file.',
@@ -51,13 +53,6 @@ export function saveRemixSettings(settings, storage = getDefaultStorage()) {
   } catch {
     return false;
   }
-}
-
-/** 92 -> '92', 78.24 -> '78.2'; '--' when unknown. */
-export function formatBpm(bpm) {
-  if (!(bpm > 0)) return '--';
-  const r = Math.round(bpm * 10) / 10;
-  return Number.isInteger(r) ? String(r) : r.toFixed(1);
 }
 
 /** Seconds as m:ss, or m:ss.s with tenths. */
@@ -110,6 +105,7 @@ export function mountRemix(remix, { storage = getDefaultStorage() } = {}) {
   let drag = null;
   let tapTimer = 0;
   let songMark = 0; // bumped on every load so cached peaks are dropped
+  let lastPos = 0; // song time of the playhead when it last moved
   const tap = createTapTempo();
 
   const saved = loadRemixSettings(storage);
@@ -122,7 +118,7 @@ export function mountRemix(remix, { storage = getDefaultStorage() } = {}) {
   const emptyPanel = el('div', { class: 'rk-drop' }, [
     el('div', { class: 'rk-btnrow rk-drop__btns' }, [el('span', { class: 'rk-pair' }, [loadBtn, helpTip('remixLoad')])]),
     el('p', { class: 'rk-drop__or', text: 'or drop an audio file anywhere on this panel' }),
-    el('p', { class: 'rk-hint', text: 'MP3, WAV, OGG or M4A, up to 15 minutes. The file stays on this computer; nothing is uploaded.' }),
+    el('p', { class: 'rk-hint', text: `MP3, WAV, OGG or M4A, up to ${MAX_MINUTES} minutes. The file stays on this computer; nothing is uploaded.` }),
   ]);
   const loadBusy = el('p', { class: 'rk-busy', role: 'status' });
   const loadMsg = el('p', { class: 'rk-msg', role: 'status' });
@@ -158,6 +154,8 @@ export function mountRemix(remix, { storage = getDefaultStorage() } = {}) {
     el('span', { text: 'Loop' }),
   ]);
   const loopInfo = el('p', { class: 'rk-remix__loopinfo' });
+  const markStartBtn = el('button', { type: 'button', class: 'rk-key', text: 'Start here' });
+  const markEndBtn = el('button', { type: 'button', class: 'rk-key', text: 'End here' });
 
   const songPanel = el('div', { class: 'rk-remix__song', hidden: true }, [
     el('div', { class: 'rk-remix__strip' }, [
@@ -170,7 +168,12 @@ export function mountRemix(remix, { storage = getDefaultStorage() } = {}) {
     ]),
     el('div', { class: 'rk-field' }, [helpLabel('remixWave')]),
     wave,
-    el('div', { class: 'rk-btnrow' }, [el('span', { class: 'rk-pair' }, [loopSwitch, helpTip('remixLoop')]), loopInfo]),
+    el('div', { class: 'rk-btnrow' }, [
+      el('span', { class: 'rk-pair' }, [loopSwitch, helpTip('remixLoop')]),
+      el('span', { class: 'rk-pair' }, [markStartBtn, helpTip('remixMarkStart')]),
+      el('span', { class: 'rk-pair' }, [markEndBtn, helpTip('remixMarkEnd')]),
+      loopInfo,
+    ]),
     el('p', {
       class: 'rk-hint',
       text: 'Play song only plays your song. The Play key in the top strip plays your beat; both can sound at once. Turn on Beat plays along to keep them in time.',
@@ -204,7 +207,9 @@ export function mountRemix(remix, { storage = getDefaultStorage() } = {}) {
     return { btn, cell: el('span', { class: 'rk-pair' }, [btn, tip]) };
   };
   const slowed = presetKey('slowedReverb', helpTip('remixSlowedReverb'), true);
+  const nightcore = presetKey('nightcore', helpTip('remixNightcore'));
   const original = presetKey('original', helpTip('remixOriginal'));
+  const presetKeys = [[slowed, 'slowedReverb'], [nightcore, 'nightcore'], [original, 'original']];
 
   const speedKeys = new Map();
   const speedCells = SPEED_PRESETS.map((p) => {
@@ -273,7 +278,7 @@ export function mountRemix(remix, { storage = getDefaultStorage() } = {}) {
 
   const soundModule = el('section', { class: 'rk-module rk-module--col rk-module--wide', 'aria-labelledby': 'rk-remix-sound-h', hidden: true }, [
     el('h3', { class: 'rk-silk', id: 'rk-remix-sound-h', text: 'Sound' }),
-    el('div', { class: 'rk-btnrow' }, [slowed.cell, original.cell]),
+    el('div', { class: 'rk-btnrow' }, [slowed.cell, nightcore.cell, original.cell]),
     el('div', { class: 'rk-remix__speedrow' }, [
       el('div', { class: 'rk-field' }, [helpLabel('remixSpeed', { id: 'rk-remix-speeds' }), speedOut]),
       el('div', { class: 'rk-speedkeys', role: 'group', 'aria-labelledby': 'rk-remix-speeds' }, speedCells),
@@ -418,6 +423,7 @@ export function mountRemix(remix, { storage = getDefaultStorage() } = {}) {
     try {
       await remix.load(file, { name: file.name });
       songMark++;
+      lastPos = 0;
       tap.reset();
       setMsg(loadMsg, `Loaded ${file.name}. Press Play song to hear it.`);
     } catch (err) {
@@ -602,8 +608,36 @@ export function mountRemix(remix, { storage = getDefaultStorage() } = {}) {
     if (!remix.loaded || isLocked()) return;
     const next = moveEdge(which, t, loop);
     remix.setLoop(next.start, next.end);
+    if (!remix.loop.enabled) remix.setLoopEnabled(true);
     renderLoop();
   }
+
+  // Where Start here / End here mark: the playhead, or where it last was.
+  function markPosition() {
+    const pos = remix.getPosition();
+    if (pos != null) lastPos = pos;
+    return clamp(lastPos, 0, duration());
+  }
+
+  // The other edge moves out of the way when the mark would leave less than MIN_LOOP.
+  function markLoop(which) {
+    if (!remix.loaded || isLocked()) return;
+    const d = duration();
+    const t = markPosition();
+    const loop = remix.loop.enabled ? remix.loop : { start: 0, end: d };
+    let { start, end } = loop;
+    if (which === 'start') {
+      start = Math.min(t, Math.max(0, d - MIN_LOOP));
+      if (end - start < MIN_LOOP) end = d;
+    } else {
+      end = Math.max(t, Math.min(d, MIN_LOOP));
+      if (end - start < MIN_LOOP) start = 0;
+    }
+    remix.setLoop(start, end);
+    if (!remix.loop.enabled) remix.setLoopEnabled(true);
+    render();
+  }
+
   startHandle.addEventListener('keydown', onHandleKey);
   endHandle.addEventListener('keydown', onHandleKey);
 
@@ -611,6 +645,7 @@ export function mountRemix(remix, { storage = getDefaultStorage() } = {}) {
 
   async function playFrom(from) {
     if (!remix.loaded || isLocked()) return;
+    if (Number.isFinite(from)) lastPos = from;
     const gen = ++playGen;
     starting = true;
     render();
@@ -632,6 +667,7 @@ export function mountRemix(remix, { storage = getDefaultStorage() } = {}) {
     if (remix.isPlaying || starting) {
       playGen++;
       starting = false;
+      markPosition();
       remix.stop();
       render();
     } else {
@@ -644,6 +680,7 @@ export function mountRemix(remix, { storage = getDefaultStorage() } = {}) {
     const pos = remix.getPosition();
     const d = duration();
     if (pos != null && d > 0) {
+      lastPos = pos;
       playhead.hidden = false;
       playhead.style.left = `${(clamp(pos, 0, d) / d) * 100}%`;
     } else {
@@ -729,13 +766,14 @@ export function mountRemix(remix, { storage = getDefaultStorage() } = {}) {
 
   function renderSound() {
     const s = remix.settings;
-    slowed.btn.setAttribute('aria-pressed', String(matchesPreset(s, REMIX_PRESETS.slowedReverb.settings)));
-    original.btn.setAttribute('aria-pressed', String(matchesPreset(s, REMIX_PRESETS.original.settings)));
+    for (const [key, id] of presetKeys) {
+      key.btn.setAttribute('aria-pressed', String(matchesPreset(s, REMIX_PRESETS[id].settings)));
+      key.btn.disabled = isLocked();
+    }
     for (const { btn, speed } of speedKeys.values()) {
       btn.setAttribute('aria-pressed', String(near(s.speed, speed, 0.001)));
       btn.disabled = isLocked();
     }
-    slowed.btn.disabled = original.btn.disabled = isLocked();
     speedOut.firstElementChild.textContent = formatSpeed(s.speed);
     const pct = (x) => Math.round((Number(x) || 0) * 100);
     spaceK.knob.setValue(pct(s.reverb));
@@ -793,7 +831,10 @@ export function mountRemix(remix, { storage = getDefaultStorage() } = {}) {
     lockNote.hidden = !isLocked();
 
     if (loaded && info) {
-      if (songName.textContent !== info.name) songName.textContent = info.name;
+      if (songName.textContent !== info.name) {
+        songName.textContent = info.name;
+        songName.title = info.name;
+      }
       songTime.textContent = formatTime(info.duration);
       const playing = remix.isPlaying;
       const waiting = starting && !playing;
@@ -803,7 +844,7 @@ export function mountRemix(remix, { storage = getDefaultStorage() } = {}) {
       if (waiting) deckBtn.setAttribute('aria-busy', 'true');
       else deckBtn.removeAttribute('aria-busy');
       deckBtn.disabled = isLocked();
-      loopSwitch.disabled = isLocked();
+      loopSwitch.disabled = markStartBtn.disabled = markEndBtn.disabled = isLocked();
       wave.classList.toggle('is-locked', isLocked());
       renderLoop();
       renderSound();
@@ -840,6 +881,8 @@ export function mountRemix(remix, { storage = getDefaultStorage() } = {}) {
     loadBtn.focus();
   });
   deckBtn.addEventListener('click', toggleDeck);
+  markStartBtn.addEventListener('click', () => markLoop('start'));
+  markEndBtn.addEventListener('click', () => markLoop('end'));
   loopSwitch.addEventListener('click', () => {
     if (isLocked()) return;
     remix.setLoopEnabled(!remix.loop.enabled);
@@ -877,10 +920,8 @@ export function mountRemix(remix, { storage = getDefaultStorage() } = {}) {
   });
   songModule.addEventListener('drop', () => songModule.classList.remove('is-dropping'));
 
-  let resizeObserver = null;
   if (typeof ResizeObserver === 'function') {
-    resizeObserver = new ResizeObserver(queueDraw);
-    resizeObserver.observe(wave);
+    new ResizeObserver(queueDraw).observe(wave);
   } else {
     window.addEventListener('resize', queueDraw);
   }
@@ -906,7 +947,7 @@ export function mountRemix(remix, { storage = getDefaultStorage() } = {}) {
       console.error('Rythmik: saved remix', err);
     }
   }
-  const unsubscribe = remix.onChange(() => {
+  remix.onChange(() => {
     followSync();
     render();
   });
@@ -935,19 +976,12 @@ export function mountRemix(remix, { storage = getDefaultStorage() } = {}) {
       }
       loadFile(file);
     },
-    destroy() {
-      resizeObserver?.disconnect();
-      window.removeEventListener('resize', queueDraw);
-      dprQuery?.removeEventListener?.('change', onDprChange);
-      if (rafId) cancelAnimationFrame(rafId);
-      clearTimeout(tapTimer);
-      unsubscribe();
-    },
     /** Esc stops the song while REMIX is on screen. */
     stop() {
       if (!remix.isPlaying) return false;
       playGen++;
       starting = false;
+      markPosition();
       remix.stop();
       render();
       return true;

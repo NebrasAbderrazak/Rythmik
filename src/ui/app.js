@@ -97,8 +97,8 @@ export function mountApp(root, engine) {
   const lockMark = el('span', { class: 'rk-lockmark', hidden: true, text: 'Locked while recording' });
   const recLink = el('a', { class: 'rk-rec', href: routeHash('booth'), hidden: true }, [
     led('is-on rk-led--blink'),
-    el('span', { 'aria-hidden': 'true', text: 'REC' }),
-    el('span', { class: 'rk-visually-hidden', text: 'Recording a take. Go to Booth.' }),
+    el('span', { text: 'REC' }),
+    el('span', { class: 'rk-visually-hidden', text: ': recording a take. Go to Booth.' }),
   ]);
   // While the song plays outside REMIX it would otherwise be invisible.
   const stopSongBtn = el('button', { type: 'button', class: 'rk-key rk-key--led' }, [led('is-on'), el('span', { text: 'Stop song' })]);
@@ -133,7 +133,7 @@ export function mountApp(root, engine) {
 
   // One deck for the whole app: REMIX plays it, the booth records over it.
   const remix = createRemix(engine);
-  const beat = mountBeat(engine, { status, loadWithUndo, afterAudio: renderAudioNote });
+  const beatView = mountBeat(engine, { status, loadWithUndo, afterAudio: renderAudioNote });
   const remixView = mountRemix(remix, { storage });
   const boothView = mountBooth(engine, {
     remix,
@@ -142,9 +142,9 @@ export function mountApp(root, engine) {
   });
   const tour = createTour({
     anchors: {
-      pads: beat.anchors.pads,
+      pads: beatView.anchors.pads,
       play: playBtn,
-      presets: beat.anchors.presets,
+      presets: beatView.anchors.presets,
       booth: modeLinks.booth,
       remix: modeLinks.remix,
     },
@@ -156,7 +156,7 @@ export function mountApp(root, engine) {
     },
   });
   const views = {
-    beat: viewShell('beat', beat.el),
+    beat: viewShell('beat', beatView.el),
     booth: viewShell('booth', boothView.el),
     remix: viewShell('remix', remixView.el),
     guide: viewShell('guide', guide),
@@ -177,11 +177,20 @@ export function mountApp(root, engine) {
     return el('kbd', { text: t });
   }
 
+  // The views live in hash routes, so the skip link moves focus itself instead of following its href.
+  const skipLink = el('a', { class: 'rk-skip', href: '#rk-main', text: 'Skip to section' });
+  const main = el('main', { class: 'rk-body', id: 'rk-main', tabindex: -1 }, Object.values(views));
+  skipLink.addEventListener('click', (e) => {
+    e.preventDefault();
+    (views[route]?.querySelector('.rk-view__title') || main).focus();
+  });
+
   const machine = el('div', { class: 'rk-machine', 'data-advanced': String(advanced) }, [
+    skipLink,
     header,
     transport,
     statusLine,
-    el('main', { class: 'rk-body' }, Object.values(views)),
+    main,
     footer,
   ]);
   root.replaceChildren(machine);
@@ -204,7 +213,7 @@ export function mountApp(root, engine) {
     document.title = `Rythmik | ${VIEW_INFO[next].title}`;
     renderRec();
     renderDeck();
-    beat.setActive(next === 'beat');
+    beatView.setActive(next === 'beat');
     boothView.setActive();
     remixView.setActive(next === 'remix');
     if (focus) views[next].querySelector('.rk-view__title')?.focus();
@@ -250,7 +259,7 @@ export function mountApp(root, engine) {
     for (const c of [bpmNumber, bpmRange]) c.disabled = on;
     playBtn.disabled = on && !remixTake;
     lockMark.hidden = !on;
-    beat.setLocked(on);
+    beatView.setLocked(on);
     remixView.setLocked(on);
     renderPlaying(engine.isPlaying);
     renderRec();
@@ -286,7 +295,7 @@ export function mountApp(root, engine) {
     const lit = isPlaying || remixTake;
     playLabel.textContent = remixTake ? 'Cancel take' : isPlaying ? 'Stop' : 'Play';
     playBtn.dataset.playing = lit ? 'true' : 'false';
-    beat.setPlaying(isPlaying);
+    beatView.setPlaying(isPlaying);
   }
 
   let contextListened = false;
@@ -305,6 +314,7 @@ export function mountApp(root, engine) {
   }
 
   async function ensureAudio() {
+    if (engine.context?.state === 'running') return;
     try {
       await engine.resume();
     } catch (err) {
@@ -420,5 +430,4 @@ export function mountApp(root, engine) {
   renderPlaying(engine.isPlaying);
   renderDeck();
   renderAudioNote();
-
 }

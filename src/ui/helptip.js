@@ -53,7 +53,7 @@ export function closeHelp() {
   return close();
 }
 
-/** Small "?" button with its popover. */
+/** Small "?" button with its popover. The explanation is also the button's description, so it is heard on focus. */
 export function helpTip(key) {
   const entry = HELP[key];
   if (!entry) throw new Error(`Missing help text: ${key}`);
@@ -64,12 +64,13 @@ export function helpTip(key) {
     class: 'rk-help__btn',
     'aria-expanded': 'false',
     'aria-controls': id,
+    'aria-describedby': `${id}-text`,
     'aria-label': `What is ${entry.term}?`,
     'data-help': key,
   }, [el('span', { 'aria-hidden': 'true', text: '?' })]);
   const pop = el('span', { id, class: 'rk-help__pop', role: 'note', hidden: true }, [
     el('strong', { class: 'rk-help__term', text: entry.term }),
-    el('span', { text: entry.text }),
+    el('span', { id: `${id}-text`, text: entry.text }),
   ]);
   btn.addEventListener('click', () => {
     if (open?.btn === btn) return void close();

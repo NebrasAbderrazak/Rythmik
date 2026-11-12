@@ -9,6 +9,7 @@ vi.mock('../src/audio/booth.js', async () => {
 });
 
 import { mountApp } from '../src/ui/app.js';
+import { HELP } from '../src/ui/help.js';
 
 let engine;
 const q = (sel) => document.querySelector(sel);
@@ -152,5 +153,88 @@ describe('beginner notes', () => {
     engine.setMasterVolume(0.8);
     await tick();
     expect(note.hidden).toBe(true);
+  });
+});
+
+describe('accessibility', () => {
+  it('each ? button is described by its explanation', () => {
+    const btn = q('[data-help=play]');
+    const desc = document.getElementById(btn.getAttribute('aria-describedby'));
+    expect(desc.textContent).toBe(HELP.play.text);
+    expect(btn.getAttribute('aria-expanded')).toBe('false');
+  });
+
+  it('the skip link comes first and jumps to the section heading', () => {
+    goTo('#beat');
+    const skip = q('a[href], button');
+    expect(skip.textContent).toBe('Skip to section');
+    skip.click();
+    expect(location.hash).toBe('#beat');
+    expect(document.activeElement).toBe(view('beat').querySelector('.rk-view__title'));
+  });
+
+  it('the REC link name starts with REC', () => {
+    const rec = q('.rk-rec');
+    expect(rec.querySelector('[aria-hidden=true]:not(.rk-led)')).toBeNull();
+    expect(rec.textContent.trim()).toMatch(/^REC: recording a take/);
+  });
+});
+
+describe('booth recording', () => {
+  const live = () => view('booth').querySelector('.rk-visually-hidden[role=status]');
+
+  it('announces the count-in and each bar once', async () => {
+    goTo('#booth');
+    const b = shared.booth;
+    b.micOpen = true;
+    b.emit();
+    let finish;
+    let progress = { countIn: true, beat: 1 };
+    b.getRecordProgress = () => progress;
+    b.record.mockImplementationOnce(() => {
+      b.state = 'count-in';
+      b.emit();
+      return new Promise((r) => (finish = r));
+    });
+    const said = [];
+    const watch = new MutationObserver(() => said.push(live().textContent));
+    watch.observe(live(), { childList: true, characterData: true, subtree: true });
+    q('.rk-record').click();
+    await tick();
+    progress = { countIn: true, beat: 2 };
+    await tick();
+    b.state = 'recording';
+    progress = { bar: 1, totalBars: 4, beat: 1 };
+    await tick();
+    progress = { bar: 1, totalBars: 4, beat: 3 };
+    await tick();
+    progress = { bar: 2, totalBars: 4, beat: 1 };
+    await tick();
+    b.state = 'idle';
+    b.emit();
+    finish(null);
+    await tick();
+    watch.disconnect();
+    expect(said.filter(Boolean)).toEqual(['Count-in', 'Recording bar 1 of 4', 'Recording bar 2 of 4']);
+    expect(live().textContent).toBe('');
+  });
+
+  it('says how to go on when the take limit is reached', async () => {
+    const b = shared.booth;
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => {});
+    b.record.mockRejectedValueOnce(new Error('too-many-takes'));
+    q('.rk-record').click();
+    await tick();
+    const msg = view('booth').querySelector('.rk-msg.is-error');
+    expect(msg.textContent).toBe('You have 12 takes. Delete one to record another.');
+    expect(logged).not.toHaveBeenCalled();
+    expect(playBtn().disabled).toBe(false);
+    logged.mockRestore();
+    b.takesFull = true;
+    b.record.mockClear();
+    q('.rk-record').click();
+    expect(b.record).not.toHaveBeenCalled();
+    expect(msg.textContent).toBe('You have 12 takes. Delete one to record another.');
+    b.takesFull = false;
   });
 });
