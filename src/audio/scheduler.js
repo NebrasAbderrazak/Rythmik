@@ -3,6 +3,33 @@
 
 import { createTicker } from './ticker.js';
 
+function advanceAnchor(anchors, a) {
+  if (a.period) {
+    a.at += a.period;
+    anchors.sort((x, y) => x.at - y.at);
+  } else anchors.shift();
+}
+
+/**
+ * Moves grid.nextTime / grid.nextStep onto the first anchor when the next step
+ * is within half a step of it (anchors: ascending [{ at, period }], consumed or
+ * advanced in place). Shared by the realtime scheduler and offline renders.
+ */
+export function snapToAnchors(grid, anchors, spb) {
+  const half = spb / 2;
+  for (;;) {
+    const a = anchors[0];
+    if (!a) return;
+    if (a.at < grid.nextTime - half) { advanceAnchor(anchors, a); continue; } // missed it
+    if (grid.nextTime >= a.at - half) {
+      grid.nextTime = a.at;
+      grid.nextStep = 0;
+      advanceAnchor(anchors, a);
+    }
+    return;
+  }
+}
+
 export class Scheduler {
   // getStepOffset delays a single step (swing) without moving the grid
   constructor({
@@ -23,6 +50,7 @@ export class Scheduler {
     this.nextTime = 0;
     this.queue = []; // [{ step, time }] scheduled, ascending time
     this.endTime = Infinity; // grid times at or after this are not scheduled
+    this.anchors = []; // [{ at, period }] ascending: step 0 lands exactly on these times
     this._tick = this._tick.bind(this);
   }
 
@@ -35,6 +63,7 @@ export class Scheduler {
     this.nextTime = Math.max(ctx.currentTime + startDelay, Number.isFinite(at) ? at : 0);
     this.queue = [];
     this.endTime = Infinity;
+    this.anchors = [];
     if (!this.ticker) this.ticker = createTicker(this.interval, this._tick, { preferWorker: this.preferWorker });
     this._tick();
     this.ticker.start();
@@ -46,6 +75,19 @@ export class Scheduler {
     this.running = false;
     if (this.ticker) this.ticker.stop();
     this.queue = [];
+    this.anchors = [];
+  }
+
+  /**
+   * Re-aligns the grid so step 0 lands on each anchor ({ at, period? }; with a
+   * period it repeats). A step closer than half a step before an anchor is dropped
+   * so the bar never flams.
+   */
+  setAnchors(list) {
+    this.anchors = (list || [])
+      .filter((a) => a && Number.isFinite(a.at))
+      .map((a) => ({ at: a.at, period: a.period > 0 ? a.period : 0 }))
+      .sort((a, b) => a.at - b.at);
   }
 
   _tick() {
@@ -56,6 +98,10 @@ export class Scheduler {
     if (this.nextTime < ctx.currentTime - 0.2) this.nextTime = ctx.currentTime + 0.02;
     while (this.nextTime < horizon && this.nextTime < this.endTime) {
       const spb = this.getSecondsPerStep();
+      if (this.anchors.length) {
+        snapToAnchors(this, this.anchors, spb);
+        if (!(this.nextTime < horizon && this.nextTime < this.endTime)) break;
+      }
       // offset < one step, so the queue stays sorted
       const time = this.nextTime + this.getStepOffset(this.nextStep, spb);
       this.onStep(this.nextStep, time);

@@ -141,7 +141,10 @@ booth.dispose()
 engine.start({ at })                     // start step 0 at a given context time
 engine.getNextBarTime(minTime)           // context time of the next downbeat, null when stopped
 engine.setEndTime(t | null)              // stop scheduling steps at or after t (start() resets it)
-engine.setTempoOverride(bpm | null)      // play at another tempo without changing the pattern
+engine.setTempoOverride(bpm | null)      // play at another tempo without changing the pattern (60..180, fractions kept)
+engine.tempoOverride                     // current override or null
+engine.setBarAnchors([{ at, period? }] | null)  // step 0 lands exactly on these context times (period: repeats);
+                                         // a step closer than half a step before one is dropped. start()/stop() clear them
 ```
 
 `record()` resolves with `null` when cancelled (including when the beat is stopped mid-take) and rejects with
@@ -193,3 +196,104 @@ booth.voiceBusy                          // true while tuning
 - `renderVocal(id, { processed: true })` is stereo and includes the reverb/echo tail; the default stays the dry mono take.
 - Echo on the voice is a dotted 1/8 at the take's tempo.
 Default key follows the 808 scale (A minor).
+
+## Remix deck
+
+Load your own audio file (it never leaves the browser), loop a part of it, change its speed and add space.
+The deck plays into `engine.master`, so it shares the master chain with the beat.
+
+```js
+import { createRemix, SPEED_PRESETS, REMIX_PRESETS, MIN_SPEED, MAX_SPEED } from './audio/remix.js';
+import { detectBpm, createTapTempo } from './audio/tempo.js';
+
+const remix = createRemix(engine);       // optional: createRemix(engine, { OfflineAudioContext })
+
+// file
+await remix.load(fileOrArrayBuffer, { name })  // decodes; resolves with remix.info. Rejects Error('decode-failed' |
+                                              // 'too-long' (> 15 min) | 'busy'). Replaces the current song.
+remix.loaded                                  // boolean
+remix.info                                    // { name, duration, sampleRate, channels } or null
+remix.unload()
+remix.getPeaks(columns)                       // { min: Float32Array, max: Float32Array } per column, source time, for a waveform
+
+// transport (source time = seconds in the original file)
+remix.play({ from, at })                      // from defaults to the loop start (or 0 when the loop is off);
+                                              // at: context time to start (default ~0.1 s from now). Returns a promise
+remix.stop()
+remix.isPlaying
+remix.getPosition()                           // current source time, for the playhead; null when stopped
+remix.setLoop(start, end)                     // source seconds, clamped, at least 0.5 s long; returns remix.loop
+remix.setLoopEnabled(bool)                    // default true, loop = whole song after load
+remix.loop                                    // { start, end, enabled }
+
+// sound
+SPEED_PRESETS                                 // [{ id: 'superSlowed', name: 'Super slowed', speed: 0.75 },
+                                              //  { id: 'slowed', name: 'Slowed', speed: 0.85 },
+                                              //  { id: 'normal', name: 'Normal', speed: 1 },
+                                              //  { id: 'spedUp', name: 'Sped up', speed: 1.25 }]
+remix.setSpeed(x)                             // MIN_SPEED 0.5 .. MAX_SPEED 1.5; pitch follows speed (classic "slowed")
+remix.setKeepPitch(bool)                      // Advanced: time-stretch offline so pitch stays; default false
+remix.stretchBusy                             // true while stretching; playback keeps the old sound until done
+remix.setFx(name, value)                      // returns the applied value
+//   'reverb'  0..1  "Space"
+//   'muffle'  0..1  low-pass, 0 = off (bypassed), 1 = about 500 Hz ("underwater / next room")
+//   'bass'    0..1  low shelf boost, up to +9 dB
+//   'volume'  0..1  deck level (0.8 = unity, same curve as track faders, after a fixed -3 dB trim for headroom)
+REMIX_PRESETS                                 // { original, slowedReverb, nightcore }: each { name, settings }
+remix.applyPreset(id)                         // "Slowed + reverb" = speed 0.85, reverb ~0.5, muffle a little
+remix.settings                                // { speed, keepPitch, reverb, muffle, bass, volume, beatSync } (copy)
+remix.setSettings(partial)                    // for restoring saved settings
+
+// tempo
+remix.sourceBpm                               // detected (or set) tempo of the original file; null if unknown
+remix.bpmConfidence                           // 0..1 from detection
+remix.setSourceBpm(n | null)                  // manual / tap; 40..220
+remix.effectiveBpm                            // sourceBpm * speed (rounded to 0.1), null if unknown
+remix.setBeatSync(bool)                       // the beat plays along at effectiveBpm, bar 1 on the loop start; needs a BPM
+                                              // (returns false without one). Stays on across songs; the beat only plays
+                                              // while a BPM is known
+remix.bpmBusy                                 // true while detecting after load
+
+await detectBpm(audioBuffer)                  // { bpm, confidence } (onset envelope + autocorrelation, 70..180 folded);
+                                              // async, yields while working; bpm null on silence / clips under 4 s
+const tap = createTapTempo(); tap.tap(timeMs) // returns bpm after 2+ taps, null before; resets after a 2 s gap
+tap.reset(); tap.count
+
+// export
+await remix.render({ loopOnly = true, withBeat = settings.beatSync })   // AudioBuffer, processed as you hear it
+                                              // (speed, keep pitch, fx), through the master chain + reverb tail
+
+remix.onChange(cb)                            // cb() after any change (load, settings, play state, bpm, stretch)
+remix.dispose()
+```
+- The beat (beat sync) and takes over the remix use `sourceBpm * speed` unrounded, doubled or halved into 60..180.
+  The beat is re-aligned to bar 1 on every loop wrap, so loops that are not a whole number of bars stay in step.
+  If the beat was already playing, beat sync restarts it in step. Stopping the deck stops the beat it started; the
+  user stopping the beat leaves the deck playing.
+- Song detection runs once after `load` resolves; a song only gets `sourceBpm` when confidence is at least 0.1.
+  `setSourceBpm` wins over a detection still running.
+- Keep pitch: phase vocoder with phase locking, both channels in sync. Starts 200 ms after the last speed change,
+  about 7 s for a 4-minute song at 0.85x on a mid-range laptop; up to 3 speeds kept per song.
+- `render` also takes `sampleRate` and `OfflineAudioContext`. Rejects `Error('no-song')` without a song.
+- Used by the booth: `remix.snapshot()` (throws `no-remix` / `no-bpm`), `prepareSnapshot(snap)`,
+  `playSnapshot(snap, { at, duration })`, `renderSnapshot(snap, opts)`.
+
+### Recording over the remix
+```js
+booth.setBacking('beat' | 'remix')            // needs createBooth(engine, { remix }); 'remix' requires a loaded song
+                                              // with a BPM. Rejects/throws Error('busy') while recording
+booth.backing                                 // 'beat' (default) | 'remix'
+                                              // setBacking('remix') throws Error('no-remix' | 'no-bpm'); unloading the
+                                              // song switches back to 'beat'
+```
+With the remix as backing, a take starts on the loop start (bar 1) and is `bars` bars at `remix.effectiveBpm`.
+The count-in clicks at that tempo. The beat only plays along if beat sync is on. Each take keeps a snapshot of
+the remix settings it was recorded over (`take.backing`), and `playTake`/`renderMix` use that snapshot, so a
+take still lines up after you change speed. Changing the loop start or speed afterwards does not move old takes.
+
+- `take.backing`: `{ type: 'beat' }` or `{ type: 'remix', name, speed, keepPitch, reverb, muffle, bass, volume,
+  beatSync, sourceBpm, bpm, loop: { start, end, enabled } }`; `take.bpm` is the remix tempo (may have decimals).
+- Recording over the remix restarts the deck from the loop start after the count-in and stops it after the take;
+  a beat that is playing without sync is stopped. Stopping the deck mid-take drops the take (`record()` resolves
+  `null`); stopping the beat does not. Recording or previewing over the beat stops a playing deck.
+- `playTake(id, { withBeat: true })` on a remix take plays its snapshot (song + synced beat), not the live deck.

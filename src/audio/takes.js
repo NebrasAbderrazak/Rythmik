@@ -94,15 +94,36 @@ const offlineCtor = (C) => {
  * Beat (pattern looped for the take's bars at the take's bpm, with its fx) +
  * vocal through the voice chain, all through the master chain.
  * opts: samples (processed aligned vocal; default dry), voice settings,
- * voiceDelay (frames, from measureVoiceDelay), OfflineAudioContext.
+ * voiceDelay (frames, from measureVoiceDelay), OfflineAudioContext,
+ * renderBacking({ duration, sampleRate, startAt, tail, setup, OfflineAudioContext })
+ * to render something else than the pattern under the vocal (the remix deck).
  */
 export async function renderMix(pattern, take, latencyMs, opts = {}) {
   const { voice = DEFAULT_VOICE, voiceDelay = 0 } = opts;
   const Ctor = offlineCtor(opts.OfflineAudioContext);
   const samples = opts.samples || alignedSamples(take, latencyMs);
   const peak = peakOf(samples); // level follows what is played: the tuned samples when tuning is on
-  const p = normalizePattern({ ...pattern, bpm: take.meta.bpm });
   const startAt = voiceDelay / take.sampleRate;
+  if (opts.renderBacking) {
+    const { bpm } = take.meta;
+    const buf = await opts.renderBacking({
+      duration: take.meta.duration,
+      sampleRate: take.sampleRate,
+      startAt,
+      tail: Math.max(MIX_TAIL, voiceTail(voice, bpm)),
+      OfflineAudioContext: Ctor,
+      setup(ctx, bus) {
+        const src = ctx.createBufferSource();
+        src.buffer = bufferFrom(ctx, samples, take.sampleRate);
+        src.connect(createVoiceChain(ctx, bus, {
+          peak, bpm, settings: voice, delay: voiceDelay,
+        }).input);
+        src.start(0);
+      },
+    });
+    return trimStart(buf, voiceDelay, Ctor);
+  }
+  const p = normalizePattern({ ...pattern, bpm: take.meta.bpm });
   const tail = Math.max(MIX_TAIL, fxTail(p.fx, p.bpm), voiceTail(voice, p.bpm));
   const buf = await renderPatternOffline(p, {
     bars: take.meta.bars,

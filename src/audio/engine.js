@@ -262,10 +262,16 @@ export function createEngine(options = {}) {
     setEndTime(time) {
       scheduler.endTime = Number.isFinite(time) ? time : Infinity;
     },
-    /** Play at this bpm without changing the pattern (null = pattern bpm). */
+    /** Play at this bpm without changing the pattern (null = pattern bpm). Fractions are kept. */
     setTempoOverride(bpm) {
-      tempoOverride = bpm == null ? null : clampBpm(bpm, pattern.bpm);
+      const v = Number(bpm);
+      tempoOverride = bpm == null || !Number.isFinite(v) ? null : Math.min(MAX_BPM, Math.max(MIN_BPM, v));
       applyFx();
+    },
+    get tempoOverride() { return tempoOverride; },
+    /** Step 0 lands on each { at, period? } context time while playing; null clears. start() and stop() clear it. */
+    setBarAnchors(list) {
+      scheduler.setAnchors(list);
     },
     onStateChange(cb) {
       stateListeners.add(cb);
