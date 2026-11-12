@@ -1,6 +1,6 @@
 # Rythmik
 
-Make beats in your browser, then rap over them. A step sequencer with a synthesized drum kit and 808 plus a recording booth, built with Vite, vanilla JavaScript and the Web Audio API. No samples, no backend, no network requests: the production build is plain static files.
+Make beats in your browser, then rap over them. A step sequencer with a synthesized drum kit and 808, a recording booth and a remix deck for your own songs, built with Vite, vanilla JavaScript and the Web Audio API. No samples, no backend, no network requests: the production build is plain static files.
 
 ## Features
 **Beat**
@@ -14,6 +14,12 @@ Make beats in your browser, then rap over them. A step sequencer with a synthesi
 - Latency compensation, optional monitoring
 - Voice presets: Clean, Robot and Tuned autotune, Radio, Hall, Lo-fi (key, scale and retune speed in Advanced)
 - Export the full song or the vocal alone as WAV
+
+**Remix**
+- Load your own song (it never leaves your computer), see its waveform and loop any part of it
+- One-click Slowed + reverb, speed presets from super slowed to sped up, Space, Muffle, Bass and Volume (keep pitch and fine speed in Advanced)
+- Tempo detection plus tap tempo; the beat can play along in time with the song
+- Record your takes over the remix in the Booth, export the remix as WAV
 
 **For beginners and pros**
 - One Advanced switch reveals swing, per-track volume / mute / solo, master volume, per-step 808 notes and latency trim
@@ -132,5 +138,5 @@ docs/        Engine API reference
 1. Beat maker (done)
 2. Rap booth: record vocals over the beat, WAV export (done)
 3. Effects, including a robot-autotune voice (done)
-4. Remix deck: slow down, add reverb and rap over your own tracks
+4. Remix deck: slow down, add reverb and rap over your own tracks (done)
 5. Polish and ship
