@@ -1,10 +1,14 @@
 import { createBooth } from '../audio/booth.js';
 import { encodeWav } from '../audio/wav.js';
+import { helpLabel, helpTip } from './helptip.js';
+import { el, silk, led, isTyping, downloadBlob } from './dom.js';
 
 const BAR_OPTIONS = [2, 4, 8, 16];
 const OFFSET_MIN = -200;
 const OFFSET_MAX = 200;
 const METER_DECAY = 0.88; // per frame, so short peaks stay visible
+const METER_SEGMENTS = 12;
+const METER_FLOOR_DB = -48;
 
 const MIC_MESSAGES = {
   'mic-denied':
@@ -33,26 +37,6 @@ function saveInput(id) {
   }
 }
 
-function el(tag, attrs = {}, children = []) {
-  const node = document.createElement(tag);
-  for (const [key, value] of Object.entries(attrs)) {
-    if (value === undefined || value === null || value === false) continue;
-    if (key === 'class') node.className = value;
-    else if (key === 'text') node.textContent = value;
-    else node.setAttribute(key, value === true ? '' : String(value));
-  }
-  for (const child of children) if (child) node.append(child);
-  return node;
-}
-
-function led() {
-  return el('span', { class: 'rk-led', 'aria-hidden': 'true' });
-}
-
-function silk(text) {
-  return el('span', { class: 'rk-silk', 'aria-hidden': 'true', text });
-}
-
 function formatMs(ms) {
   const v = Math.round(ms || 0);
   return `${v > 0 ? '+' : ''}${v} ms`;
@@ -69,30 +53,31 @@ function takeNumber(take) {
   return m ? m[1] : String(take?.id ?? '');
 }
 
-function isTyping(target) {
-  if (!(target instanceof HTMLElement)) return false;
-  if (target.isContentEditable) return true;
-  if (target.tagName === 'TEXTAREA' || target.tagName === 'SELECT') return true;
-  if (target.tagName === 'INPUT') {
-    const t = target.type;
-    return t !== 'range' && t !== 'checkbox' && t !== 'radio' && t !== 'button';
-  }
-  return false;
+/** Number of lit meter segments for a 0..1 peak level. */
+export function meterSegments(level, segments = METER_SEGMENTS, floorDb = METER_FLOOR_DB) {
+  if (!(level > 0)) return 0;
+  const db = 20 * Math.log10(Math.min(1, level));
+  const n = Math.ceil(((db - floorDb) / -floorDb) * segments);
+  return Math.max(0, Math.min(segments, n));
 }
 
-function download(arrayBuffer, filename) {
-  const url = URL.createObjectURL(new Blob([arrayBuffer], { type: 'audio/wav' }));
-  const a = el('a', { href: url, download: filename, hidden: true });
-  document.body.append(a);
-  a.click();
-  a.remove();
-  // Revoking synchronously can abort the download in some browsers.
-  setTimeout(() => URL.revokeObjectURL(url), 1000);
+function step(n, title, id, tip = null) {
+  const stateLed = led('rk-step__led');
+  const h = el('h3', { class: 'rk-step__h', id }, [
+    el('span', { class: 'rk-step__num', 'aria-hidden': 'true', text: String(n) }),
+    el('span', { class: 'rk-step__title' }, [el('span', { class: 'rk-visually-hidden', text: `Step ${n}: ` }), title]),
+    stateLed,
+  ]);
+  // The "?" stays outside the heading so it is not part of the heading's name.
+  const head = el('div', { class: 'rk-step__head' }, [h, tip]);
+  return { head, led: stateLed };
 }
 
-// onLockChange(locked) fires when a take starts or ends. Focus on a control the
-// callback disables moves to the Cancel button.
-export function mountBooth(engine, { onLockChange = () => {} } = {}) {
+/**
+ * The BOOTH view. onLockChange(locked) fires when a take starts or ends.
+ * isActive() tells whether the view is on screen (the R shortcut only works there).
+ */
+export function mountBooth(engine, { onLockChange = () => {}, isActive = () => true } = {}) {
   const booth = createBooth(engine);
   let locked = false;
 
@@ -102,85 +87,70 @@ export function mountBooth(engine, { onLockChange = () => {} } = {}) {
   let busy = false;
   let cancelRequested = false;
   let meterLevel = 0;
+  let litSegments = -1;
   let rafId = 0;
   let switching = false;
   let diagText = '';
+  let progressText = '';
 
-  // mic
-  const micBtn = el('button', { type: 'button', class: 'rk-key rk-booth__key', 'aria-pressed': 'false' }, [
-    led(),
-    el('span', { text: 'Enable mic' }),
-  ]);
-  const monitorBtn = el(
-    'button',
-    { type: 'button', class: 'rk-key rk-booth__key', 'aria-pressed': 'false', 'aria-label': 'Monitor mic input' },
-    [led(), el('span', { text: 'Monitor' })],
-  );
-  const inputSelect = el('select', { id: 'rk-booth-input', class: 'rk-booth__select rk-booth__input' }, [
+  // 1 mic
+  const inputSelect = el('select', { id: 'rk-booth-input', class: 'rk-select rk-booth__input' }, [
     el('option', { value: '', text: 'System default' }),
   ]);
-  const inputName = el('span', { class: 'rk-booth__input-name' });
-  const diagMsg = el('p', { class: 'rk-booth__msg', role: 'status', 'aria-live': 'polite' });
-  const meterFill = el('span', { class: 'rk-booth__meter-fill' });
-  const meter = el('span', { class: 'rk-booth__meter', 'aria-hidden': 'true' }, [meterFill]);
-  const micMsg = el('p', { class: 'rk-booth__msg', role: 'status', 'aria-live': 'polite' });
-  const micModule = el('div', { class: 'rk-module rk-booth__module' }, [
-    silk('Mic'),
-    el('div', { class: 'rk-booth__row' }, [micBtn, monitorBtn]),
-    el('div', { class: 'rk-booth__row' }, [
-      el('label', { class: 'rk-booth__label', for: 'rk-booth-input', text: 'Input' }),
-      inputSelect,
+  const micLabel = el('span', { text: 'Enable mic' });
+  const micLed = led();
+  const micBtn = el('button', { type: 'button', class: 'rk-key rk-key--led' }, [micLed, micLabel]);
+  const monitorBtn = el('button', { type: 'button', class: 'rk-key rk-key--led', 'aria-pressed': 'false' }, [
+    led(),
+    el('span', { text: 'Monitor' }),
+  ]);
+  const meterSegs = Array.from({ length: METER_SEGMENTS }, (_, i) =>
+    el('span', { class: `rk-ladder__seg${i === METER_SEGMENTS - 1 ? ' rk-ladder__seg--clip' : ''}` }),
+  );
+  const meter = el('span', { class: 'rk-ladder is-off', 'aria-hidden': 'true' }, meterSegs);
+  const inputName = el('p', { class: 'rk-booth__active' });
+  const micEmpty = el('p', {
+    class: 'rk-empty',
+    text: 'Plug in or pick a mic, put on headphones, then press Enable mic.',
+  });
+  const micMsg = el('p', { class: 'rk-msg', role: 'status' });
+  const diagMsg = el('p', { class: 'rk-msg', role: 'status' });
+  const micStep = step(1, 'Mic', 'rk-step-mic');
+  const micPanel = el('section', { class: 'rk-step', 'aria-labelledby': 'rk-step-mic' }, [
+    micStep.head,
+    micEmpty,
+    el('div', { class: 'rk-field' }, [helpLabel('input', { forId: 'rk-booth-input' }), inputSelect]),
+    el('div', { class: 'rk-btnrow' }, [
+      el('span', { class: 'rk-pair' }, [micBtn, helpTip('mic')]),
+      el('span', { class: 'rk-pair' }, [monitorBtn, helpTip('monitoring')]),
     ]),
-    el('div', { class: 'rk-booth__row' }, [el('span', { class: 'rk-booth__label', text: 'Level' }), meter]),
+    el('div', { class: 'rk-field' }, [helpLabel('level'), meter]),
     inputName,
-    el('p', { class: 'rk-booth__hint', text: 'Use headphones so the beat does not leak into the mic.' }),
     micMsg,
     diagMsg,
   ]);
 
-  // record
+  // 2 record
   const barsSelect = el(
     'select',
-    { id: 'rk-booth-bars', class: 'rk-booth__select' },
+    { id: 'rk-booth-bars', class: 'rk-select' },
     BAR_OPTIONS.map((n) => el('option', { value: n, text: `${n} bars` })),
   );
   barsSelect.value = String(bars);
-  const countInBtn = el(
-    'button',
-    { type: 'button', class: 'rk-key rk-booth__key', 'aria-pressed': String(countIn), 'aria-label': 'Count-in, one bar' },
-    [led(), el('span', { text: 'Count-in' })],
-  );
+  const countInBtn = el('button', { type: 'button', class: 'rk-key rk-key--led', 'aria-pressed': String(countIn) }, [
+    led(),
+    el('span', { text: 'Count-in' }),
+  ]);
   const recordLabel = el('span', { text: 'Record' });
+  const recordLed = led();
   const recordBtn = el(
     'button',
-    { type: 'button', class: 'rk-key rk-booth__key rk-booth__record', 'aria-keyshortcuts': 'R', disabled: true },
-    [led(), recordLabel],
+    { type: 'button', class: 'rk-key rk-key--led rk-key--big rk-record', 'aria-keyshortcuts': 'R', disabled: true },
+    [recordLed, recordLabel],
   );
   const progress = el('p', { class: 'rk-booth__progress', 'aria-hidden': 'true' });
-  const recordModule = el('div', { class: 'rk-module rk-booth__module' }, [
-    silk('Record'),
-    el('div', { class: 'rk-booth__row' }, [
-      el('label', { class: 'rk-booth__label', for: 'rk-booth-bars', text: 'Length' }),
-      barsSelect,
-      countInBtn,
-    ]),
-    el('div', { class: 'rk-booth__row' }, [recordBtn, progress]),
-  ]);
+  const recordEmpty = el('p', { class: 'rk-empty', text: 'Enable the mic in step 1 first.' });
 
-  // takes
-  const takeList = el('ul', { class: 'rk-booth__takes', 'aria-label': 'Takes, selected take is used in the mix' });
-  const noTakes = el('p', { class: 'rk-booth__hint', text: 'No takes yet.' });
-  const stopBtn = el('button', { type: 'button', class: 'rk-key rk-booth__key', disabled: true, 'aria-label': 'Stop preview' }, [
-    el('span', { text: 'Stop' }),
-  ]);
-  const takesModule = el('div', { class: 'rk-module rk-booth__module rk-booth__module--wide' }, [
-    silk('Takes'),
-    noTakes,
-    takeList,
-    el('div', { class: 'rk-booth__row' }, [stopBtn]),
-  ]);
-
-  // latency
   const offsetRange = el('input', {
     id: 'rk-booth-offset',
     type: 'range',
@@ -190,33 +160,71 @@ export function mountBooth(engine, { onLockChange = () => {} } = {}) {
     step: 1,
   });
   offsetRange.value = String(offsetMs);
-  const offsetOut = el('output', { class: 'rk-booth__value', for: 'rk-booth-offset' });
-  const autoOut = el('span', { class: 'rk-booth__value' });
-  const totalOut = el('span', { class: 'rk-booth__value' });
-  const latencyModule = el('div', { class: 'rk-module rk-booth__module' }, [
-    silk('Latency'),
-    el('p', { class: 'rk-booth__row' }, [el('span', { class: 'rk-booth__label', text: 'Auto' }), autoOut]),
-    el('div', { class: 'rk-booth__row' }, [
-      el('label', { class: 'rk-booth__label', for: 'rk-booth-offset', text: 'Offset' }),
+  const offsetOut = el('output', { class: 'rk-value', for: 'rk-booth-offset' });
+  const autoOut = el('span', { class: 'rk-value' });
+  const totalOut = el('span', { class: 'rk-value' });
+  const latencyBlock = el('div', { class: 'rk-subpanel rk-adv' }, [
+    el('div', { class: 'rk-field' }, [helpLabel('latency')]),
+    el('p', { class: 'rk-field' }, [el('span', { class: 'rk-field__name', text: 'Estimate' }), autoOut]),
+    el('div', { class: 'rk-field' }, [
+      helpLabel('latencyOffset', { forId: 'rk-booth-offset', sub: false }),
       offsetRange,
       offsetOut,
     ]),
-    el('p', { class: 'rk-booth__row' }, [el('span', { class: 'rk-booth__label', text: 'Total' }), totalOut]),
+    el('p', { class: 'rk-field' }, [el('span', { class: 'rk-field__name', text: 'Total' }), totalOut]),
+    el('p', { class: 'rk-hint', text: 'Voice late on playback? Move Offset right. Early? Move it left.' }),
   ]);
 
-  // export
-  const mixBtn = el('button', { type: 'button', class: 'rk-key rk-booth__key', text: 'Export mix (WAV)' });
-  const vocalBtn = el('button', { type: 'button', class: 'rk-key rk-booth__key', text: 'Export vocal (WAV)' });
-  const exportMsg = el('p', { class: 'rk-booth__msg', role: 'status', 'aria-live': 'polite' });
-  const exportModule = el('div', { class: 'rk-module rk-booth__module' }, [
-    silk('Export'),
-    el('div', { class: 'rk-booth__row' }, [mixBtn, vocalBtn]),
+  const recStep = step(2, 'Record', 'rk-step-rec');
+  const offsetNote = el('p', { class: 'rk-note-line rk-beginner', hidden: true });
+  const recPanel = el('section', { class: 'rk-step', 'aria-labelledby': 'rk-step-rec' }, [
+    recStep.head,
+    recordEmpty,
+    el('div', { class: 'rk-field' }, [helpLabel('takeBars', { forId: 'rk-booth-bars' }), barsSelect]),
+    el('div', { class: 'rk-btnrow' }, [countInBtn, helpTip('countIn')]),
+    el('div', { class: 'rk-btnrow' }, [recordBtn, helpTip('record'), progress]),
+    offsetNote,
+    latencyBlock,
+  ]);
+
+  // 3 takes
+  const takeList = el('ul', { class: 'rk-takes', 'aria-label': 'Takes; the picked take is used in the mix' });
+  const noTakes = el('p', { class: 'rk-empty', text: 'Your takes will show up here.' });
+  const stopBtn = el('button', { type: 'button', class: 'rk-key', disabled: true, 'aria-label': 'Stop take playback', text: 'Stop' });
+  const takesStep = step(3, 'Takes', 'rk-step-takes', helpTip('takes'));
+  const takeLegend = el('p', { class: 'rk-btnrow rk-takes__legend' }, [
+    helpLabel('takePlay', { sub: false }),
+    helpLabel('takeDelete', { sub: false }),
+    el('span', { class: 'rk-hint', text: 'The take marked In mix is the one you export.' }),
+  ]);
+  const takesPanel = el('section', { class: 'rk-step rk-step--wide', 'aria-labelledby': 'rk-step-takes' }, [
+    takesStep.head,
+    noTakes,
+    takeLegend,
+    takeList,
+    el('div', { class: 'rk-btnrow' }, [stopBtn, helpTip('previewStop')]),
+  ]);
+
+  // 4 export
+  const mixBtn = el('button', { type: 'button', class: 'rk-key', text: 'Export mix (WAV)' });
+  const vocalBtn = el('button', { type: 'button', class: 'rk-key', text: 'Export vocal (WAV)' });
+  const exportEmpty = el('p', { class: 'rk-empty', text: 'Record a take, pick it in step 3, then export it here.' });
+  const exportMsg = el('p', { class: 'rk-msg', role: 'status' });
+  const exportStep = step(4, 'Export', 'rk-step-export');
+  const exportPanel = el('section', { class: 'rk-step', 'aria-labelledby': 'rk-step-export' }, [
+    exportStep.head,
+    exportEmpty,
+    el('div', { class: 'rk-btnrow' }, [mixBtn, helpTip('exportMix')]),
+    el('div', { class: 'rk-btnrow' }, [vocalBtn, helpTip('exportVocal')]),
     exportMsg,
   ]);
 
-  const section = el('section', { class: 'rk-booth', 'aria-labelledby': 'rk-booth-title' }, [
-    el('h2', { id: 'rk-booth-title', class: 'rk-booth__title rk-silk', text: 'Booth' }),
-    el('div', { class: 'rk-booth__modules' }, [micModule, recordModule, latencyModule, takesModule, exportModule]),
+  const view = el('div', { class: 'rk-booth' }, [
+    el('p', { class: 'rk-hint rk-booth__intro' }, [
+      silk('Tip', { 'aria-hidden': 'true' }),
+      el('span', { text: ' Wear headphones so the beat does not leak into the mic.' }),
+    ]),
+    el('div', { class: 'rk-steps' }, [micPanel, recPanel, takesPanel, exportPanel]),
   ]);
 
   // Take rows are keyed by id so focus survives re-renders.
@@ -224,21 +232,22 @@ export function mountBooth(engine, { onLockChange = () => {} } = {}) {
 
   function makeTakeRow(take) {
     const radioId = `rk-take-${take.id}`;
-    const radio = el('input', { type: 'radio', id: radioId, name: 'rk-booth-take', value: take.id, class: 'rk-booth__radio' });
+    const radio = el('input', { type: 'radio', id: radioId, name: 'rk-booth-take', value: take.id, class: 'rk-radio' });
     radio.addEventListener('change', () => {
       if (radio.checked) booth.selectTake(take.id);
     });
-    const name = el('span', { class: 'rk-booth__take-name', text: take.name });
-    const info = el('span', { class: 'rk-booth__take-info' });
-    const label = el('label', { class: 'rk-booth__take-label', for: radioId }, [radio, name, info]);
-    const playBtn = el('button', { type: 'button', class: 'rk-key rk-booth__key', 'aria-label': `Play ${take.name} with beat` }, [
+    const name = el('span', { class: 'rk-take__name', text: take.name });
+    const info = el('span', { class: 'rk-take__info' });
+    const tag = el('span', { class: 'rk-take__tag', text: 'In mix' });
+    const label = el('label', { class: 'rk-take__label', for: radioId }, [radio, name, info, tag]);
+    const playBtn = el('button', { type: 'button', class: 'rk-key rk-key--led', 'aria-label': `Play ${take.name} with beat` }, [
       led(),
       el('span', { text: 'Play' }),
     ]);
     playBtn.addEventListener('click', () => startPreview(take));
-    const delBtn = el('button', { type: 'button', class: 'rk-key rk-booth__key', 'aria-label': `Delete ${take.name}`, text: 'Delete' });
+    const delBtn = el('button', { type: 'button', class: 'rk-key', 'aria-label': `Delete ${take.name}`, text: 'Delete' });
     delBtn.addEventListener('click', () => deleteTake(take.id));
-    const li = el('li', { class: 'rk-booth__take' }, [label, el('div', { class: 'rk-booth__row' }, [playBtn, delBtn])]);
+    const li = el('li', { class: 'rk-take' }, [label, el('div', { class: 'rk-btnrow' }, [playBtn, delBtn])]);
     return { li, radio, info, playBtn, delBtn };
   }
 
@@ -261,14 +270,16 @@ export function mountBooth(engine, { onLockChange = () => {} } = {}) {
       const at = takeList.children[i] || null;
       if (at !== row.li) takeList.insertBefore(row.li, at);
       row.info.textContent = `${take.bars} bars, ${(take.duration || 0).toFixed(1)} s, peak ${formatPeak(take.peak)}`;
-      row.radio.checked = take.id === booth.selectedTakeId;
-      const playing = booth.previewTakeId === take.id;
-      row.playBtn.setAttribute('aria-pressed', String(playing));
+      const selected = take.id === booth.selectedTakeId;
+      row.radio.checked = selected;
+      row.li.classList.toggle('is-selected', selected);
+      row.playBtn.firstElementChild.classList.toggle('is-on', booth.previewTakeId === take.id);
       row.playBtn.disabled = recording || busy;
       row.delBtn.disabled = recording || busy;
     });
     noTakes.hidden = takes.length > 0;
     takeList.hidden = takes.length === 0;
+    takeLegend.hidden = takes.length === 0;
   }
 
   // Disabling a focused control drops focus to the page; keep it nearby.
@@ -296,52 +307,65 @@ export function mountBooth(engine, { onLockChange = () => {} } = {}) {
     const micOpen = !!booth.micOpen;
     const takes = booth.takes || [];
 
-    micBtn.setAttribute('aria-pressed', String(micOpen));
-    micBtn.lastElementChild.textContent = micOpen ? 'Mic on' : 'Enable mic';
-    micBtn.setAttribute('aria-label', micOpen ? 'Microphone on, press to turn off' : 'Enable microphone');
+    micLabel.textContent = micOpen ? 'Turn mic off' : 'Enable mic';
+    micLed.classList.toggle('is-on', micOpen);
     micBtn.disabled = !idle;
     inputSelect.disabled = !idle || switching;
     selectCurrentInput();
-    inputName.textContent = micOpen && booth.inputLabel ? `Active: ${booth.inputLabel}` : '';
+    inputName.textContent = micOpen && booth.inputLabel ? `Active mic: ${booth.inputLabel}` : '';
     if (!micOpen) setDiag('');
     monitorBtn.setAttribute('aria-pressed', String(!!booth.monitoring));
     monitorBtn.disabled = !micOpen; // closeMic resets monitoring
     meter.classList.toggle('is-off', !micOpen);
+    micEmpty.hidden = micOpen;
+    micStep.led.classList.toggle('is-on', micOpen);
 
     barsSelect.disabled = !idle;
     countInBtn.disabled = !idle;
     countInBtn.setAttribute('aria-pressed', String(countIn));
 
     recordBtn.disabled = !micOpen && idle;
-    recordBtn.setAttribute('aria-pressed', String(!idle));
-    recordLabel.textContent = idle ? 'Record' : 'Cancel';
-    recordBtn.setAttribute('aria-label', idle ? `Record ${bars} bars` : 'Cancel recording');
-    if (idle) progress.textContent = micOpen ? '' : 'Enable the mic to record.';
+    recordLabel.textContent = idle ? `Record ${bars} bars` : 'Cancel recording';
+    recordLed.classList.toggle('is-on', !idle);
+    recordEmpty.hidden = micOpen || !idle;
+    recStep.led.classList.toggle('is-on', !idle);
+    recStep.led.classList.toggle('is-blink', state === 'count-in');
+    if (idle) setProgress('');
 
     autoOut.textContent = `${Math.round(booth.autoLatencyMs || 0)} ms`;
     totalOut.textContent = `${Math.round(booth.latencyMs || 0)} ms`;
     offsetOut.textContent = formatMs(offsetMs);
     offsetRange.setAttribute('aria-valuetext', formatMs(offsetMs));
     offsetRange.disabled = !idle;
+    const note = offsetMs !== 0
+      ? `Some Advanced settings are active: the latency offset is ${formatMs(offsetMs)}. Turn on Advanced to change it.`
+      : '';
+    if (offsetNote.textContent !== note) offsetNote.textContent = note;
+    offsetNote.hidden = !note;
 
     renderTakes(takes);
     stopBtn.disabled = booth.previewTakeId == null;
+    takesStep.led.classList.toggle('is-on', booth.previewTakeId != null);
 
     const hasTake = takes.some((t) => t.id === booth.selectedTakeId);
     mixBtn.disabled = vocalBtn.disabled = busy || !idle || !hasTake;
+    exportEmpty.hidden = hasTake;
 
     updateLoop();
   }
 
-  function setMicMsg(text, error = false) {
-    micMsg.textContent = text;
-    micMsg.classList.toggle('is-error', error);
+  function setProgress(t) {
+    if (t === progressText) return;
+    progressText = t;
+    progress.textContent = t;
   }
 
-  function setExportMsg(text, error = false) {
-    exportMsg.textContent = text;
-    exportMsg.classList.toggle('is-error', error);
+  function setMsg(node, t, error = false) {
+    node.textContent = t;
+    node.classList.toggle('is-error', error);
   }
+  const setMicMsg = (t, error) => setMsg(micMsg, t, error);
+  const setExportMsg = (t, error) => setMsg(exportMsg, t, error);
 
   // Labels stay generic until mic permission is granted.
   async function refreshInputs() {
@@ -383,12 +407,11 @@ export function mountBooth(engine, { onLockChange = () => {} } = {}) {
     if (booth.micOpen) refreshInputs();
   }
 
-  function setDiag(text) {
+  function setDiag(t) {
     // Only touch the live region when the message changes.
-    if (text === diagText) return;
-    diagText = text;
-    diagMsg.textContent = text;
-    diagMsg.classList.toggle('is-error', !!text);
+    if (t === diagText) return;
+    diagText = t;
+    setMsg(diagMsg, t, !!t);
   }
 
   function checkMic() {
@@ -426,11 +449,10 @@ export function mountBooth(engine, { onLockChange = () => {} } = {}) {
     setMicMsg('Waiting for microphone permission…');
     try {
       await booth.openMic();
-      if (!booth.lastFallback) setMicMsg('Mic on. Press Record or R.');
+      if (!booth.lastFallback) setMicMsg('Mic on. Go to step 2 and press Record (or R).');
       refreshInputs();
     } catch (err) {
-      const msg = MIC_MESSAGES[err?.message] || 'Could not open the microphone.';
-      setMicMsg(msg, true);
+      setMicMsg(MIC_MESSAGES[err?.message] || 'Could not open the microphone.', true);
       console.error('Rythmik: mic', err);
     }
     render();
@@ -451,7 +473,7 @@ export function mountBooth(engine, { onLockChange = () => {} } = {}) {
         console.error('Rythmik: record', err);
       }
     }
-    if (take) setMicMsg(`${take.name} recorded.`);
+    if (take) setMicMsg(`${take.name} recorded. Play it in step 3.`);
     else if (cancelRequested) setMicMsg('Recording cancelled.');
     else setMicMsg('Recording stopped, no take kept.');
     cancelRequested = false;
@@ -501,7 +523,7 @@ export function mountBooth(engine, { onLockChange = () => {} } = {}) {
     try {
       const buffer = kind === 'mix' ? await booth.renderMix(take.id) : await booth.renderVocal(take.id);
       const filename = `rythmik-${kind}-take-${takeNumber(take)}.wav`;
-      download(encodeWav(buffer, { bitDepth: 16 }), filename);
+      downloadBlob(encodeWav(buffer, { bitDepth: 16 }), filename, 'audio/wav');
       setExportMsg(`Saved ${filename}.`);
     } catch (err) {
       console.error('Rythmik: export', err);
@@ -512,33 +534,41 @@ export function mountBooth(engine, { onLockChange = () => {} } = {}) {
     if (returnFocus instanceof HTMLElement && !returnFocus.disabled) returnFocus.focus();
   }
 
+  function paintMeter() {
+    const n = meterSegments(meterLevel);
+    if (n === litSegments) return;
+    litSegments = n;
+    meterSegs.forEach((s, i) => s.classList.toggle('is-on', i < n));
+  }
+
   // Polls level and progress only while there is something to show.
   function frame() {
     rafId = 0;
     if (booth.micOpen) {
       meterLevel = Math.max(booth.getInputLevel() || 0, meterLevel * METER_DECAY);
-      meterFill.style.transform = `scaleX(${Math.min(1, meterLevel).toFixed(3)})`;
-      meter.classList.toggle('is-hot', meterLevel >= 0.98);
+      paintMeter();
       checkMic();
     }
     if (booth.state !== 'idle') {
       const p = booth.getRecordProgress() || {}; // null once the take ends
-      progress.textContent =
+      setProgress(
         p.countIn || booth.state === 'count-in'
           ? `Count-in${p.beat ? ` ${p.beat}` : ''}`
-          : `Recording bar ${Math.max(1, p.bar || 1)} of ${p.totalBars || bars}`;
+          : `Recording bar ${Math.max(1, p.bar || 1)} of ${p.totalBars || bars}`,
+      );
     }
     updateLoop();
   }
 
+  // Only polls while the view is on screen; setActive() restarts it.
   function updateLoop() {
-    const needed = booth.micOpen || booth.state !== 'idle';
+    const needed = isActive() && (booth.micOpen || booth.state !== 'idle');
     if (needed && !rafId) rafId = requestAnimationFrame(frame);
     if (!needed) {
       if (rafId) cancelAnimationFrame(rafId);
       rafId = 0;
       meterLevel = 0;
-      meterFill.style.transform = 'scaleX(0)';
+      paintMeter();
     }
   }
 
@@ -572,7 +602,7 @@ export function mountBooth(engine, { onLockChange = () => {} } = {}) {
   vocalBtn.addEventListener('click', () => exportTake('vocal'));
 
   function onKey(e) {
-    if (e.ctrlKey || e.metaKey || e.altKey || e.repeat) return;
+    if (e.ctrlKey || e.metaKey || e.altKey || e.repeat || e.defaultPrevented) return;
     if (e.key === 'Escape') {
       if (booth.state !== 'idle') {
         e.preventDefault();
@@ -583,7 +613,7 @@ export function mountBooth(engine, { onLockChange = () => {} } = {}) {
       }
       return;
     }
-    if ((e.key === 'r' || e.key === 'R') && !isTyping(e.target)) {
+    if ((e.key === 'r' || e.key === 'R') && !isTyping(e.target) && isActive()) {
       if (booth.state !== 'idle') return;
       e.preventDefault();
       if (booth.micOpen) startRecording();
@@ -602,13 +632,21 @@ export function mountBooth(engine, { onLockChange = () => {} } = {}) {
   render();
   refreshInputs();
 
-  section.destroy = () => {
-    document.removeEventListener('keydown', onKey);
-    unsubscribe?.();
-    unsubDevices?.();
-    if (rafId) cancelAnimationFrame(rafId);
-    booth.cancel();
-    booth.dispose();
+  return {
+    el: view,
+    setActive() {
+      updateLoop();
+    },
+    get recording() {
+      return booth.state !== 'idle';
+    },
+    destroy() {
+      document.removeEventListener('keydown', onKey);
+      unsubscribe?.();
+      unsubDevices?.();
+      if (rafId) cancelAnimationFrame(rafId);
+      booth.cancel();
+      booth.dispose();
+    },
   };
-  return section;
 }

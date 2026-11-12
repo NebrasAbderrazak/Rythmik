@@ -1,14 +1,22 @@
 # Rythmik
 
-Make beats in your browser. A step sequencer with a synthesized drum kit and 808, built with Vite, vanilla JavaScript and the Web Audio API. No samples, no backend, no network requests: the production build is plain static files.
+Make beats in your browser, then rap over them. A step sequencer with a synthesized drum kit and 808 plus a recording booth, built with Vite, vanilla JavaScript and the Web Audio API. No samples, no backend, no network requests: the production build is plain static files.
 
 ## Features
+**Beat**
 - 8 synthesized tracks: Kick, Snare, Clap, Closed hat, Open hat, Rim, Shaker, 808 bass
-- 16-step grid, per-step 808 notes (A minor)
-- Tempo 60–180 BPM, swing, per-track volume / mute / solo, master volume
-- Presets: Afro bass, Trap, Boom bap, Empty
-- Autosave in your browser, export / import patterns as JSON
-- Keyboard: Space plays/stops, arrow keys move between pads
+- 16-step grid, presets (Afro bass, Trap, Boom bap, Empty), tempo 60–180 BPM
+- Export the beat as WAV, export / import patterns as JSON, autosave in your browser
+
+**Booth**
+- Pick your mic, record over the looping beat with a count-in, keep multiple takes
+- Latency compensation, optional monitoring
+- Export the full song or the vocal alone as WAV
+
+**For beginners and pros**
+- One Advanced switch reveals swing, per-track volume / mute / solo, master volume, per-step 808 notes and latency trim
+- A "?" next to every control explains it in one sentence, plus a short first-visit tour and a Guide page
+- Keyboard: Space plays/stops, R records in the Booth, Esc cancels, arrow keys move between pads
 
 ## Run locally
 Requires Node.js 22.12 or newer (Vite 8 and Vitest 5).
@@ -120,6 +128,7 @@ docs/        Engine API reference
 
 ## Roadmap
 1. Beat maker (done)
-2. Rap booth: record vocals over the beat, WAV export
+2. Rap booth: record vocals over the beat, WAV export (in progress)
 3. Effects, including a robot-autotune voice
-4. Polish and ship
+4. Remix deck: slow down, add reverb and rap over your own tracks
+5. Polish and ship

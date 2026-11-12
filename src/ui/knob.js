@@ -1,4 +1,4 @@
-// Rotary knob (role="slider"): drag, arrow keys, PageUp/PageDown, Home/End.
+// Rotary knob (role="slider"): drag, arrow keys, PageUp/PageDown, Home/End, Delete/0 resets.
 
 const SWEEP = 270; // degrees from min to max
 const DRAG_PX = 160; // pixels of drag for the full range
@@ -14,6 +14,8 @@ export function createKnob({
   defaultValue = value,
   format = (v) => `${v}%`,
   size = 'md',
+  showReadout = !!caption,
+  labelledBy = '',
   onInput = () => {},
 }) {
   const root = document.createElement('div');
@@ -23,11 +25,12 @@ export function createKnob({
   dial.className = 'rk-knob__dial';
   dial.tabIndex = 0;
   dial.setAttribute('role', 'slider');
-  dial.setAttribute('aria-label', label);
+  if (labelledBy) dial.setAttribute('aria-labelledby', labelledBy);
+  else dial.setAttribute('aria-label', label);
   dial.setAttribute('aria-valuemin', String(min));
   dial.setAttribute('aria-valuemax', String(max));
   dial.setAttribute('aria-orientation', 'vertical');
-  dial.setAttribute('aria-description', 'Double-click or double-tap to reset.');
+  dial.setAttribute('aria-description', 'Delete, double-click or double-tap resets it.');
 
   const ring = document.createElement('span');
   ring.className = 'rk-knob__ring';
@@ -44,10 +47,13 @@ export function createKnob({
     cap2.className = 'rk-knob__caption';
     cap2.setAttribute('aria-hidden', 'true');
     cap2.textContent = caption;
+    root.append(cap2);
+  }
+  if (showReadout) {
     readout = document.createElement('span');
     readout.className = 'rk-knob__readout';
     readout.setAttribute('aria-hidden', 'true');
-    root.append(cap2, readout);
+    root.append(readout);
   }
 
   let current = NaN;
@@ -86,6 +92,9 @@ export function createKnob({
       case 'PageDown': next = current - bigStep; break;
       case 'Home': next = min; break;
       case 'End': next = max; break;
+      case 'Delete':
+      case 'Backspace':
+      case '0': next = defaultValue; break;
       default: return;
     }
     e.preventDefault();
