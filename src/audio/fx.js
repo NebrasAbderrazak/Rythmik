@@ -25,14 +25,26 @@ export const DEFAULT_SENDS = {
   rim: { reverb: 0.3, echo: 0.3 },
   shaker: { reverb: 0.15, echo: 0.1 },
   bass: { reverb: 0, echo: 0 },
+  tomlo: { reverb: 0.25, echo: 0.1 },
+  tomhi: { reverb: 0.25, echo: 0.1 },
+  crash: { reverb: 0.15, echo: 0 },
+  ride: { reverb: 0.15, echo: 0.1 },
+  cowbell: { reverb: 0.2, echo: 0.2 },
+  conga: { reverb: 0.2, echo: 0.15 },
+  snap: { reverb: 0.3, echo: 0.25 },
+  logdrum: { reverb: 0.1, echo: 0.05 },
 };
+// samples and anything else
+export const PERC_SENDS = { reverb: 0.2, echo: 0.15 };
+export const defaultSends = (id) => ({ ...(DEFAULT_SENDS[id] || PERC_SENDS) });
 
 const isObject = (x) => x !== null && typeof x === 'object' && !Array.isArray(x);
 const round3 = (x) => Math.round(x * 1000) / 1000;
 
-export function defaultFx() {
+/** `ids`: the pattern's tracks; sends are keyed by each. */
+export function defaultFx(ids = TRACK_IDS) {
   const sends = {};
-  for (const id of TRACK_IDS) sends[id] = { ...DEFAULT_SENDS[id] };
+  for (const id of ids) sends[id] = defaultSends(id);
   return { reverb: 0, echo: 0, echoTime: '1/8', filter: 0, drive: 0, sends };
 }
 
@@ -47,12 +59,12 @@ export function clampFx(name, value, fallback) {
   return v === fallback ? v : round3(v);
 }
 
-export function normalizeFx(src) {
-  const out = defaultFx();
+export function normalizeFx(src, ids = TRACK_IDS) {
+  const out = defaultFx(ids);
   if (!isObject(src)) return out;
   for (const name of FX_NAMES) out[name] = clampFx(name, src[name], out[name]);
   const sends = isObject(src.sends) ? src.sends : {};
-  for (const id of TRACK_IDS) {
+  for (const id of ids) {
     const s = isObject(sends[id]) ? sends[id] : {};
     for (const k of SEND_KINDS) out.sends[id][k] = clampFx(k, s[k], out.sends[id][k]);
   }
@@ -65,7 +77,7 @@ export const echoSeconds = (bpm, echoTime = '1/8') => secondsPerStep(bpm) * (ECH
 export function fxTail(fx, bpm) {
   if (!fx) return 0;
   let tail = 0;
-  const anySend = (k) => TRACK_IDS.some((id) => fx.sends?.[id]?.[k] > 0);
+  const anySend = (k) => Object.values(fx.sends || {}).some((s) => s?.[k] > 0);
   if (fx.reverb > 0 && (fx.sends ? anySend('reverb') : true)) tail = REVERB_SECONDS + REVERB_PREDELAY;
   if (fx.echo > 0 && (fx.sends ? anySend('echo') : true)) {
     const repeats = Math.ceil(Math.log(0.001) / Math.log(ECHO_FEEDBACK));
@@ -332,7 +344,7 @@ export function createBeatFx(ctx, destination) {
   let echo = null;
   let echoTime = '1/8';
   let bpm = 120;
-  const anySend = (fx, k) => TRACK_IDS.some((id) => fx.sends?.[id]?.[k] > 0);
+  const anySend = (fx, k) => Object.values(fx.sends || {}).some((s) => s?.[k] > 0);
   return {
     input,
     sends,

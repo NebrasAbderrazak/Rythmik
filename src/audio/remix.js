@@ -6,16 +6,15 @@
 // rate 1, where buffer time = source time / speed. Everything else (position,
 // loop, peaks, beat alignment) is worked out in source time.
 import {
-  STEPS, MIN_BPM, MAX_BPM, clampUnit, secondsPerStep, swingOffset, volumeToGain,
+  STEPS, MIN_BPM, MAX_BPM, clampUnit, secondsPerStep, volumeToGain,
 } from './constants.js';
 import {
-  createReverb, createBeatFx, glide, fxTail, REVERB_SECONDS, REVERB_PREDELAY,
+  createReverb, glide, REVERB_SECONDS, REVERB_PREDELAY,
 } from './fx.js';
-import {
-  createMasterChain, applyMaster, createMixer, playStep, createVoiceState,
-} from './sequence.js';
-import { normalizePattern } from './pattern.js';
-import { DEFAULT_TAIL } from './export.js';
+import { createMasterChain, applyMaster } from './sequence.js';
+import { normalizePattern, loopLength } from './pattern.js';
+import { createBeatPlayer } from './offline.js';
+import { beatTail } from './export.js';
 import { snapToAnchors } from './scheduler.js';
 import { timeStretch } from './stretch.js';
 import { detectBpm } from './tempo.js';
@@ -353,16 +352,20 @@ function beatAnchors(v, after, bpm) {
 }
 
 /** Step times for an offline beat, aligned exactly like the realtime scheduler. */
-export function gridSteps(first, spb, anchors, end) {
+export function gridSteps(first, spb, anchors, end, loopSteps = STEPS) {
   const list = anchors.map((a) => ({ at: a.at, period: a.period || 0 })).sort((a, b) => a.at - b.at);
   const grid = { nextTime: first, nextStep: 0 };
   const out = [];
+  let pass = 0;
   while (grid.nextTime < end) {
-    snapToAnchors(grid, list, spb);
+    const before = grid.nextStep;
+    snapToAnchors(grid, list, spb, loopSteps);
+    if (grid.nextStep === 0 && before !== 0) pass++;
     if (grid.nextTime >= end) break;
-    out.push({ step: grid.nextStep, time: grid.nextTime });
+    out.push({ step: grid.nextStep, time: grid.nextTime, pass });
     grid.nextTime += spb;
-    grid.nextStep = (grid.nextStep + 1) % STEPS;
+    grid.nextStep++;
+    if (grid.nextStep >= loopSteps) { grid.nextStep = 0; pass++; }
   }
   return out;
 }
@@ -913,8 +916,9 @@ export function createRemix(engine, opts = {}) {
     const startAt = o.startAt || 0;
     const pattern = normalizePattern(o.pattern || engine.getPattern());
     const bpm = o.withBeat ? snap.bpm : null;
+    const samples = o.sampleVoices || engine.sampleVoices || {};
     const tail = Math.max(
-      MIN_TAIL, o.tail || 0, remixTail(snap), bpm ? Math.max(DEFAULT_TAIL, fxTail(pattern.fx, bpm)) : 0,
+      MIN_TAIL, o.tail || 0, remixTail(snap), bpm ? beatTail({ ...pattern, bpm }, samples) : 0,
     );
     const ctx = new Ctor(2, Math.ceil((startAt + o.length + tail) * sr), sr);
     const master = createMasterChain(ctx);
@@ -927,18 +931,12 @@ export function createRemix(engine, opts = {}) {
     fadeOutVoice(v, startAt + o.length);
 
     if (bpm) {
-      const fx = createBeatFx(ctx, bus);
-      fx.setTempo(bpm, false);
-      fx.apply(pattern.fx, false);
-      const mixer = createMixer(ctx, fx.input, fx.sends);
-      mixer.apply(pattern.mixer, false);
-      mixer.applySends(pattern.fx.sends, false);
-      const voices = createVoiceState(false);
+      const play = createBeatPlayer(ctx, bus, pattern, bpm, { samples, minTime: startAt });
       const spb = secondsPerStep(bpm);
       const first = nextDownbeat(v, startAt, bpm);
       const anchors = beatAnchors(v, first + 1e-3, bpm).filter((a) => a.period);
-      for (const { step, time } of gridSteps(first, spb, anchors, startAt + o.length)) {
-        playStep(ctx, mixer.inputs, pattern, step, time + swingOffset(step, pattern.swing, spb), voices);
+      for (const { step, time, pass } of gridSteps(first, spb, anchors, startAt + o.length, loopLength(pattern))) {
+        play(step, time, pass);
       }
     }
     if (o.setup) await o.setup(ctx, bus);

@@ -3,6 +3,7 @@ import { OfflineAudioContext } from 'node-web-audio-api';
 import { renderPatternOffline } from '../src/audio/offline.js';
 import { createEngine, TRACKS } from '../src/audio/engine.js';
 import { PRESETS } from '../src/audio/presets.js';
+import V3 from './fixtures/v3-presets.json';
 import {
   emptyPattern, normalizePattern, parsePattern, serializePattern, PATTERN_VERSION,
 } from '../src/audio/pattern.js';
@@ -64,18 +65,18 @@ function goertzel(d, f, sr) {
 
 function single(bpm, id, fx = {}, sends = {}) {
   const p = emptyPattern(bpm);
-  p.steps[id] = on(0);
+  p.sections.A.steps[id] = on(0);
   Object.assign(p.fx, fx);
   for (const t of TRACKS) p.fx.sends[t.id] = { reverb: 0, echo: 0 };
   p.fx.sends[id] = { reverb: 0, echo: 0, ...sends };
   return p;
 }
 
-describe('pattern v3 fx', () => {
+describe('pattern fx', () => {
   it('defaults are off with sensible sends', () => {
     const p = emptyPattern();
-    expect(PATTERN_VERSION).toBe(3);
-    expect(p.version).toBe(3);
+    expect(PATTERN_VERSION).toBe(4);
+    expect(p.version).toBe(4);
     expect(p.fx).toEqual(defaultFx());
     expect(p.fx).toMatchObject({ reverb: 0, echo: 0, echoTime: '1/8', filter: 0, drive: 0 });
     expect(p.fx.sends.kick).toEqual({ reverb: 0, echo: 0 });
@@ -87,7 +88,7 @@ describe('pattern v3 fx', () => {
     const v1 = normalizePattern({ bpm: 90, steps: { kick: on(0) } });
     const v2 = parsePattern(JSON.stringify({ version: 2, bpm: 90, steps: { kick: on(0) }, mixer: {} }));
     for (const p of [v1, v2]) {
-      expect(p.version).toBe(3);
+      expect(p.version).toBe(4);
       expect(p.fx).toEqual(defaultFx());
     }
   });
@@ -118,14 +119,15 @@ describe('pattern v3 fx', () => {
   });
 
   it('presets carry fx and round-trip', () => {
-    expect(PRESETS.afroBass.pattern.fx.reverb).toBeGreaterThan(0);
-    expect(PRESETS.trap.pattern.fx.echo).toBeGreaterThan(0);
-    expect(PRESETS.trap.pattern.fx.sends.hat.echo).toBeGreaterThan(0);
-    expect(PRESETS.trap.pattern.fx.sends.clap.echo).toBeGreaterThan(0);
-    expect(PRESETS.boomBap.pattern.fx.drive).toBeGreaterThan(0);
-    expect(PRESETS.boomBap.pattern.fx.reverb).toBeGreaterThan(0);
-    expect(PRESETS.empty.pattern.fx).toEqual(defaultFx());
-    for (const { pattern } of Object.values(PRESETS)) {
+    const old = Object.fromEntries(Object.entries(V3).map(([k, p]) => [k, normalizePattern(p)]));
+    expect(old.afroBass.fx.reverb).toBeGreaterThan(0);
+    expect(old.trap.fx.echo).toBeGreaterThan(0);
+    expect(old.trap.fx.sends.hat.echo).toBeGreaterThan(0);
+    expect(old.trap.fx.sends.clap.echo).toBeGreaterThan(0);
+    expect(old.boomBap.fx.drive).toBeGreaterThan(0);
+    expect(old.boomBap.fx.reverb).toBeGreaterThan(0);
+    expect(PRESETS.empty.pattern.fx).toEqual(defaultFx(PRESETS.empty.pattern.tracks));
+    for (const pattern of [...Object.values(old), ...Object.values(PRESETS).map((x) => x.pattern)]) {
       expect(pattern.fx.sends.kick).toEqual({ reverb: 0, echo: 0 });
       expect(parsePattern(serializePattern(pattern))).toEqual(pattern);
     }
@@ -164,8 +166,8 @@ describe('engine fx controls', () => {
 describe('beat effects change the sound', () => {
   it('filter: low-pass darkens, high-pass thins', async () => {
     const hats = emptyPattern(120);
-    hats.steps.hat = on(0, 2, 4, 6, 8, 10, 12, 14);
-    hats.steps.kick = on(0, 8);
+    hats.sections.A.steps.hat = on(0, 2, 4, 6, 8, 10, 12, 14);
+    hats.sections.A.steps.kick = on(0, 8);
     const dry = await render(hats, { masterChain: false });
     const lp = await render({ ...hats, fx: { ...hats.fx, filter: -0.8 } }, { masterChain: false });
     const hp = await render({ ...hats, fx: { ...hats.fx, filter: 0.8 } }, { masterChain: false });
@@ -270,7 +272,7 @@ describe('beat effects change the sound', () => {
   it('a track with send 0 gets no reverb or echo', async () => {
     // kick sends nothing, snare everything; render each alone with fx full up
     const base = emptyPattern(120);
-    base.steps.kick = on(0);
+    base.sections.A.steps.kick = on(0);
     base.fx = { ...base.fx, reverb: 1, echo: 1, echoTime: '1/8' };
     base.fx.sends.kick = { reverb: 0, echo: 0 };
     base.fx.sends.snare = { reverb: 1, echo: 1 };
@@ -282,7 +284,9 @@ describe('beat effects change the sound', () => {
     for (let i = 0; i < a.length; i++) diff = Math.max(diff, Math.abs(a[i] - b[i]));
     expect(diff).toBeLessThan(1e-4);
 
-    const snare = { ...base, steps: { ...base.steps, kick: on(), snare: on(0) } };
+    const snare = structuredClone(base);
+    snare.sections.A.steps.kick = on();
+    snare.sections.A.steps.snare = on(0);
     const snareFx = await render(snare, { masterChain: false, tail: 2 });
     expect(energy(snareFx, Math.round(1.2 * SR), Math.round(2.5 * SR))).toBeGreaterThan(1e-3);
   });
@@ -303,9 +307,8 @@ describe('beat effects change the sound', () => {
       expect(pk).toBeLessThan(1);
       expect(pk).toBeGreaterThan(0.05);
     }
-    for (const { name, pattern } of Object.values(PRESETS)) {
-      if (name === 'Empty') continue;
-      const hot = normalizePattern(pattern);
+    for (const key of ['afroBass', 'trap', 'boomBap']) {
+      const hot = normalizePattern(PRESETS[key].pattern);
       hot.master = 1;
       for (const ch of Object.values(hot.mixer)) ch.volume = 1;
       Object.assign(hot.fx, { reverb: 1, echo: 1, drive: 1, filter: 0.3 });

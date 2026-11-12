@@ -1,0 +1,761 @@
+{
+ "afroBass": {
+  "version": 3,
+  "bpm": 104,
+  "swing": 0.12,
+  "master": 0.8,
+  "steps": {
+   "kick": [
+    true,
+    false,
+    false,
+    true,
+    false,
+    false,
+    false,
+    false,
+    true,
+    false,
+    false,
+    true,
+    false,
+    false,
+    false,
+    false
+   ],
+   "snare": [
+    false,
+    false,
+    false,
+    false,
+    true,
+    false,
+    false,
+    true,
+    false,
+    false,
+    false,
+    false,
+    true,
+    false,
+    false,
+    false
+   ],
+   "clap": [
+    false,
+    false,
+    false,
+    false,
+    true,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    true,
+    false,
+    false,
+    false
+   ],
+   "hat": [
+    true,
+    false,
+    true,
+    true,
+    true,
+    false,
+    true,
+    false,
+    true,
+    false,
+    true,
+    true,
+    true,
+    false,
+    false,
+    true
+   ],
+   "openhat": [
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    true,
+    false
+   ],
+   "rim": [
+    false,
+    false,
+    false,
+    true,
+    false,
+    false,
+    true,
+    false,
+    false,
+    false,
+    true,
+    false,
+    false,
+    true,
+    false,
+    false
+   ],
+   "shaker": [
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true
+   ],
+   "bass": [
+    true,
+    false,
+    false,
+    true,
+    false,
+    false,
+    true,
+    false,
+    false,
+    true,
+    false,
+    true,
+    false,
+    false,
+    true,
+    false
+   ]
+  },
+  "bassNotes": [
+   33,
+   33,
+   33,
+   33,
+   33,
+   33,
+   36,
+   36,
+   36,
+   40,
+   40,
+   38,
+   38,
+   38,
+   36,
+   36
+  ],
+  "mixer": {
+   "kick": {
+    "volume": 0.8,
+    "mute": false,
+    "solo": false
+   },
+   "snare": {
+    "volume": 0.72,
+    "mute": false,
+    "solo": false
+   },
+   "clap": {
+    "volume": 0.5,
+    "mute": false,
+    "solo": false
+   },
+   "hat": {
+    "volume": 0.7,
+    "mute": false,
+    "solo": false
+   },
+   "openhat": {
+    "volume": 0.55,
+    "mute": false,
+    "solo": false
+   },
+   "rim": {
+    "volume": 0.58,
+    "mute": false,
+    "solo": false
+   },
+   "shaker": {
+    "volume": 0.42,
+    "mute": false,
+    "solo": false
+   },
+   "bass": {
+    "volume": 0.8,
+    "mute": false,
+    "solo": false
+   }
+  },
+  "fx": {
+   "reverb": 0.3,
+   "echo": 0,
+   "echoTime": "3/16",
+   "filter": 0,
+   "drive": 0,
+   "sends": {
+    "kick": {
+     "reverb": 0,
+     "echo": 0
+    },
+    "snare": {
+     "reverb": 0.3,
+     "echo": 0.2
+    },
+    "clap": {
+     "reverb": 0.35,
+     "echo": 0.25
+    },
+    "hat": {
+     "reverb": 0.1,
+     "echo": 0.15
+    },
+    "openhat": {
+     "reverb": 0.25,
+     "echo": 0.2
+    },
+    "rim": {
+     "reverb": 0.3,
+     "echo": 0.3
+    },
+    "shaker": {
+     "reverb": 0.15,
+     "echo": 0.1
+    },
+    "bass": {
+     "reverb": 0,
+     "echo": 0
+    }
+   }
+  }
+ },
+ "trap": {
+  "version": 3,
+  "bpm": 140,
+  "swing": 0,
+  "master": 0.8,
+  "steps": {
+   "kick": [
+    true,
+    false,
+    false,
+    true,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    true,
+    false,
+    false,
+    false,
+    false,
+    false
+   ],
+   "snare": [
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    true,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false
+   ],
+   "clap": [
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    true,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false
+   ],
+   "hat": [
+    true,
+    false,
+    true,
+    true,
+    true,
+    false,
+    false,
+    false,
+    true,
+    false,
+    true,
+    false,
+    true,
+    true,
+    true,
+    true
+   ],
+   "openhat": [
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    true,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false
+   ],
+   "rim": [
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    true
+   ],
+   "shaker": [
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false
+   ],
+   "bass": [
+    true,
+    false,
+    false,
+    true,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    true,
+    true,
+    false,
+    true,
+    true,
+    false
+   ]
+  },
+  "bassNotes": [
+   33,
+   33,
+   33,
+   33,
+   33,
+   33,
+   33,
+   33,
+   33,
+   33,
+   40,
+   33,
+   33,
+   45,
+   43,
+   33
+  ],
+  "mixer": {
+   "kick": {
+    "volume": 0.78,
+    "mute": false,
+    "solo": false
+   },
+   "snare": {
+    "volume": 0.45,
+    "mute": false,
+    "solo": false
+   },
+   "clap": {
+    "volume": 0.82,
+    "mute": false,
+    "solo": false
+   },
+   "hat": {
+    "volume": 0.6,
+    "mute": false,
+    "solo": false
+   },
+   "openhat": {
+    "volume": 0.5,
+    "mute": false,
+    "solo": false
+   },
+   "rim": {
+    "volume": 0.5,
+    "mute": false,
+    "solo": false
+   },
+   "shaker": {
+    "volume": 0.6,
+    "mute": false,
+    "solo": false
+   },
+   "bass": {
+    "volume": 0.86,
+    "mute": false,
+    "solo": false
+   }
+  },
+  "fx": {
+   "reverb": 0,
+   "echo": 0.35,
+   "echoTime": "3/16",
+   "filter": 0,
+   "drive": 0,
+   "sends": {
+    "kick": {
+     "reverb": 0,
+     "echo": 0
+    },
+    "snare": {
+     "reverb": 0,
+     "echo": 0
+    },
+    "clap": {
+     "reverb": 0.2,
+     "echo": 0.35
+    },
+    "hat": {
+     "reverb": 0,
+     "echo": 0.3
+    },
+    "openhat": {
+     "reverb": 0,
+     "echo": 0
+    },
+    "rim": {
+     "reverb": 0,
+     "echo": 0
+    },
+    "shaker": {
+     "reverb": 0,
+     "echo": 0
+    },
+    "bass": {
+     "reverb": 0,
+     "echo": 0
+    }
+   }
+  }
+ },
+ "boomBap": {
+  "version": 3,
+  "bpm": 90,
+  "swing": 0.3,
+  "master": 0.8,
+  "steps": {
+   "kick": [
+    true,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    true,
+    false,
+    false,
+    true,
+    false,
+    false,
+    false,
+    false,
+    false
+   ],
+   "snare": [
+    false,
+    false,
+    false,
+    false,
+    true,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    true,
+    false,
+    false,
+    false
+   ],
+   "clap": [
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false
+   ],
+   "hat": [
+    true,
+    false,
+    true,
+    false,
+    true,
+    false,
+    true,
+    false,
+    true,
+    true,
+    true,
+    false,
+    true,
+    false,
+    false,
+    false
+   ],
+   "openhat": [
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    true,
+    false
+   ],
+   "rim": [
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    true,
+    false,
+    false
+   ],
+   "shaker": [
+    false,
+    false,
+    false,
+    true,
+    false,
+    false,
+    false,
+    true,
+    false,
+    false,
+    false,
+    true,
+    false,
+    false,
+    false,
+    true
+   ],
+   "bass": [
+    true,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    true,
+    false,
+    false,
+    false,
+    false,
+    false
+   ]
+  },
+  "bassNotes": [
+   33,
+   33,
+   33,
+   33,
+   33,
+   33,
+   33,
+   33,
+   33,
+   33,
+   36,
+   33,
+   33,
+   33,
+   33,
+   33
+  ],
+  "mixer": {
+   "kick": {
+    "volume": 0.9,
+    "mute": false,
+    "solo": false
+   },
+   "snare": {
+    "volume": 0.85,
+    "mute": false,
+    "solo": false
+   },
+   "clap": {
+    "volume": 0.6,
+    "mute": false,
+    "solo": false
+   },
+   "hat": {
+    "volume": 0.66,
+    "mute": false,
+    "solo": false
+   },
+   "openhat": {
+    "volume": 0.58,
+    "mute": false,
+    "solo": false
+   },
+   "rim": {
+    "volume": 0.55,
+    "mute": false,
+    "solo": false
+   },
+   "shaker": {
+    "volume": 0.45,
+    "mute": false,
+    "solo": false
+   },
+   "bass": {
+    "volume": 0.78,
+    "mute": false,
+    "solo": false
+   }
+  },
+  "fx": {
+   "reverb": 0.2,
+   "echo": 0,
+   "echoTime": "1/8",
+   "filter": 0,
+   "drive": 0.3,
+   "sends": {
+    "kick": {
+     "reverb": 0,
+     "echo": 0
+    },
+    "snare": {
+     "reverb": 0.3,
+     "echo": 0.2
+    },
+    "clap": {
+     "reverb": 0.35,
+     "echo": 0.25
+    },
+    "hat": {
+     "reverb": 0.1,
+     "echo": 0.15
+    },
+    "openhat": {
+     "reverb": 0.25,
+     "echo": 0.2
+    },
+    "rim": {
+     "reverb": 0.3,
+     "echo": 0.3
+    },
+    "shaker": {
+     "reverb": 0.15,
+     "echo": 0.1
+    },
+    "bass": {
+     "reverb": 0,
+     "echo": 0
+    }
+   }
+  }
+ }
+}

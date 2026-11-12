@@ -1,16 +1,26 @@
 import { Scheduler } from './scheduler.js';
 import {
-  STEPS, TRACKS, TRACK_IDS, BASS_NOTES, MIN_BPM, MAX_BPM, MAX_SWING, DEFAULT_BASS_NOTE,
-  clampBpm, clampSwing, clampUnit, isBassNote, secondsPerStep, swingOffset,
+  STEPS, TRACKS, VOICES, VOICE_IDS, BASS_NOTES, MIN_BPM, MAX_BPM, MAX_SWING, MAX_TRACKS, MAX_CHAIN,
+  MAX_NUDGE, SECTION_LENGTHS, DEFAULT_BASS_NOTE,
+  clampBpm, clampSwing, clampUnit, isBassNote, isPitched, isTrackId, secondsPerStep, swingOffset,
 } from './constants.js';
 import {
-  playStep, playVoice, createMasterChain, createMixer, applyMaster,
-  createVoiceState, silenceVoices,
+  playPosition, playVoice, createMasterChain, createMixer, applyMaster,
+  createVoiceState, silenceVoices, patternLead,
 } from './sequence.js';
-import { emptyPattern, normalizePattern } from './pattern.js';
-import { createBeatFx, clampFx, FX_NAMES, SEND_KINDS, ECHO_TIMES } from './fx.js';
+import {
+  emptyPattern, normalizePattern, normalizeStep, defaultStep, defaultChannel, emptyRow, loopLength,
+} from './pattern.js';
+import { createBeatFx, clampFx, defaultSends, FX_NAMES, SEND_KINDS, ECHO_TIMES } from './fx.js';
+import { registerSampleVoices } from './samplevoice.js';
 
-export { STEPS, TRACKS, BASS_NOTES, MIN_BPM, MAX_BPM, MAX_SWING, FX_NAMES, ECHO_TIMES };
+export {
+  STEPS, TRACKS, VOICES, VOICE_IDS, BASS_NOTES, MIN_BPM, MAX_BPM, MAX_SWING, MAX_TRACKS, MAX_CHAIN,
+  SECTION_LENGTHS, FX_NAMES, ECHO_TIMES,
+};
+
+const round3 = (x) => Math.round(x * 1000) / 1000;
+const copyStep = (s) => (s ? { ...s } : null);
 
 /** Pass { context } to use an existing (e.g. offline) AudioContext. */
 export function createEngine(options = {}) {
@@ -19,6 +29,8 @@ export function createEngine(options = {}) {
   let mixer = null;
   let fx = null;
   let pattern = emptyPattern();
+  let editSection = 'A';
+  let sampleVoices = {};
   let playing = false;
   let starting = null;
   let tempoOverride = null;
@@ -51,7 +63,11 @@ export function createEngine(options = {}) {
     if (patternListeners.size) call(patternListeners, normalizePattern(pattern));
   };
 
-  const applyMixer = () => { if (mixer) mixer.apply(pattern.mixer, true); };
+  const applyMixer = () => {
+    if (!mixer) return;
+    mixer.apply(pattern.mixer, true);
+    mixer.applySends(pattern.fx.sends, true);
+  };
   const applyMasterVolume = () => { if (chain) applyMaster(context, chain.master, pattern.master, true); };
   const applyFx = () => {
     if (!fx) return;
@@ -60,12 +76,20 @@ export function createEngine(options = {}) {
     mixer.applySends(pattern.fx.sends, true);
   };
 
+  const spbNow = () => secondsPerStep(tempoOverride ?? pattern.bpm);
   const scheduler = new Scheduler({
     getContext: () => context,
-    getSecondsPerStep: () => secondsPerStep(tempoOverride ?? pattern.bpm),
-    getStepOffset: (step, spb) => swingOffset(step, pattern.swing, spb),
-    steps: STEPS,
-    onStep: (step, time) => playStep(context, mixer.inputs, pattern, step, time, voices),
+    getSecondsPerStep: spbNow,
+    getSteps: () => loopLength(pattern),
+    getLead: () => patternLead(pattern, spbNow()),
+    // only moves the playhead; each track's own swing is applied when it plays
+    getStepOffset: (pos, spb) => swingOffset(pos, pattern.swing, spb),
+    onStep: (pos, time, pass, gridTime) => playPosition(context, mixer, pattern, pos, gridTime, voices, {
+      spb: spbNow(),
+      pass,
+      minTime: Math.max(scheduler.startTime, context.currentTime),
+      samples: sampleVoices,
+    }),
   });
 
   async function resume() {
@@ -111,17 +135,27 @@ export function createEngine(options = {}) {
     emitState();
   }
 
-  function assertTrack(trackId) {
-    if (!TRACK_IDS.includes(trackId)) throw new Error(`Unknown track: ${trackId}`);
+  // ---- checks ----
+
+  function assertTrack(id) {
+    if (!pattern.tracks.includes(id)) throw new Error(`Unknown track: ${id}`);
   }
   function assertStep(step) {
     const i = Number(step);
-    if (!Number.isInteger(i) || i < 0 || i >= STEPS) throw new Error(`Bad step: ${step}`);
+    const len = pattern.sections[editSection].length;
+    if (!Number.isInteger(i) || i < 0 || i >= len) throw new Error(`Bad step: ${step}`);
     return i;
   }
   function assertBassNote(midi) {
     if (!isBassNote(midi)) throw new Error(`Not an 808 note: ${midi}`);
   }
+  function assertSection(name) {
+    if (name !== 'A' && name !== 'B') throw new Error(`Unknown section: ${name}`);
+    if (!pattern.sections[name]) throw new Error(`No section ${name}`);
+  }
+  const editRows = () => pattern.sections[editSection].steps;
+
+  // ---- global controls ----
 
   function setBpm(n) {
     const next = clampBpm(n, pattern.bpm);
@@ -134,33 +168,36 @@ export function createEngine(options = {}) {
   }
 
   function setSwing(x) {
-    const next = Math.round(clampSwing(x, pattern.swing) * 1000) / 1000;
+    const next = round3(clampSwing(x, pattern.swing));
     if (next !== pattern.swing) { pattern.swing = next; emitPattern(); }
     return next;
   }
 
-  function setTrackVolume(trackId, v) {
-    assertTrack(trackId);
-    const ch = pattern.mixer[trackId];
-    const next = clampUnit(v, ch.volume);
-    if (next !== ch.volume) { ch.volume = next; applyMixer(); emitPattern(); }
+  function setChannel(id, key, next) {
+    assertTrack(id);
+    const ch = pattern.mixer[id];
+    if (next !== ch[key]) { ch[key] = next; applyMixer(); emitPattern(); }
     return next;
   }
 
-  function setMute(trackId, on) {
-    assertTrack(trackId);
-    const ch = pattern.mixer[trackId];
-    const next = !!on;
-    if (next !== ch.mute) { ch.mute = next; applyMixer(); emitPattern(); }
-    return next;
+  const setTrackVolume = (id, v) => {
+    assertTrack(id);
+    return setChannel(id, 'volume', clampUnit(v, pattern.mixer[id].volume));
+  };
+  const setMute = (id, on) => setChannel(id, 'mute', !!on);
+  const setSolo = (id, on) => setChannel(id, 'solo', !!on);
+
+  function setTrackSwing(id, x) {
+    assertTrack(id);
+    const ch = pattern.mixer[id];
+    const next = x === null || x === undefined ? null : round3(clampSwing(x, ch.swing ?? pattern.swing));
+    return setChannel(id, 'swing', next);
   }
 
-  function setSolo(trackId, on) {
-    assertTrack(trackId);
-    const ch = pattern.mixer[trackId];
-    const next = !!on;
-    if (next !== ch.solo) { ch.solo = next; applyMixer(); emitPattern(); }
-    return next;
+  function setTrackNudge(id, steps) {
+    assertTrack(id);
+    const ch = pattern.mixer[id];
+    return setChannel(id, 'nudge', round3(clampUnit(steps, ch.nudge, -MAX_NUDGE, MAX_NUDGE)));
   }
 
   function setMasterVolume(v) {
@@ -176,31 +213,151 @@ export function createEngine(options = {}) {
     return next;
   }
 
-  function setTrackSend(trackId, kind, value) {
-    assertTrack(trackId);
+  function setTrackSend(id, kind, value) {
+    assertTrack(id);
     if (!SEND_KINDS.includes(kind)) throw new Error(`Unknown send: ${kind}`);
-    const s = pattern.fx.sends[trackId];
+    const s = pattern.fx.sends[id];
     const next = clampFx(kind, value, s[kind]);
     if (next !== s[kind]) { s[kind] = next; applyFx(); emitPattern(); }
     return next;
   }
 
+  // ---- tracks ----
+
+  function addTrack(id) {
+    if (!isTrackId(id)) throw new Error(`Unknown track: ${id}`);
+    if (pattern.tracks.includes(id) || pattern.tracks.length >= MAX_TRACKS) return false;
+    pattern.tracks.push(id);
+    pattern.mixer[id] = defaultChannel();
+    pattern.fx.sends[id] = defaultSends(id);
+    for (const sec of Object.values(pattern.sections)) if (sec) sec.steps[id] = emptyRow(sec.length);
+    applyMixer();
+    emitPattern();
+    return true;
+  }
+
+  function removeTrack(id) {
+    if (!pattern.tracks.includes(id) || pattern.tracks.length <= 1) return false;
+    pattern.tracks = pattern.tracks.filter((t) => t !== id);
+    delete pattern.mixer[id];
+    delete pattern.fx.sends[id];
+    for (const sec of Object.values(pattern.sections)) if (sec) delete sec.steps[id];
+    applyMixer(); // the channel's gate closes, so anything still ringing fades out
+    emitPattern();
+    return true;
+  }
+
+  function moveTrack(id, toIndex) {
+    assertTrack(id);
+    const list = pattern.tracks.filter((t) => t !== id);
+    const i = Math.max(0, Math.min(list.length, Math.round(Number(toIndex)) || 0));
+    list.splice(i, 0, id);
+    if (list.every((t, k) => t === pattern.tracks[k])) return i;
+    pattern.tracks = list;
+    emitPattern();
+    return i;
+  }
+
+  // ---- steps ----
+
+  function toggleStep(id, step) {
+    assertTrack(id);
+    const i = assertStep(step);
+    const row = editRows()[id];
+    row[i] = row[i] ? null : defaultStep(id, i);
+    emitPattern();
+    return !!row[i];
+  }
+
+  function setStep(id, step, partial) {
+    assertTrack(id);
+    const i = assertStep(step);
+    const row = editRows()[id];
+    const next = partial === null ? null : normalizeStep({ ...(row[i] || defaultStep(id, i)), ...partial }, id, i);
+    if (JSON.stringify(next) !== JSON.stringify(row[i])) { row[i] = next; emitPattern(); }
+    return copyStep(next);
+  }
+
+  function getStep(id, step) {
+    assertTrack(id);
+    return copyStep(editRows()[id][assertStep(step)]);
+  }
+
+  // ---- sections ----
+
+  function setEditSection(name) {
+    assertSection(name);
+    if (name !== editSection) { editSection = name; emitPattern(); }
+    return editSection;
+  }
+
+  function setSectionLength(name, length) {
+    assertSection(name);
+    if (!SECTION_LENGTHS.includes(length)) throw new Error(`Bad length: ${length}`);
+    const sec = pattern.sections[name];
+    if (sec.length === length) return length;
+    for (const id of pattern.tracks) {
+      const row = sec.steps[id];
+      sec.steps[id] = length > sec.length
+        ? [...row, ...row.map((s) => copyStep(s))]
+        : row.slice(0, length);
+    }
+    sec.length = length;
+    emitPattern();
+    return length;
+  }
+
+  function setSectionB(on, { copyFrom = 'A' } = {}) {
+    if (on) {
+      if (pattern.sections.B) return true;
+      const from = pattern.sections[copyFrom];
+      pattern.sections.B = from ? structuredClone(from) : {
+        length: pattern.sections.A.length,
+        steps: Object.fromEntries(pattern.tracks.map((id) => [id, emptyRow(pattern.sections.A.length)])),
+      };
+    } else {
+      if (!pattern.sections.B) return false;
+      pattern.sections.B = null;
+      pattern.chain = ['A'];
+      editSection = 'A';
+    }
+    emitPattern();
+    return !!pattern.sections.B;
+  }
+
+  function setChain(list) {
+    if (!Array.isArray(list)) throw new Error('Chain must be a list');
+    const next = list.filter((n) => n === 'A' || (n === 'B' && pattern.sections.B)).slice(0, MAX_CHAIN);
+    if (!next.length) throw new Error('Chain needs at least one section');
+    if (next.join() !== pattern.chain.join()) { pattern.chain = next; emitPattern(); }
+    return [...next];
+  }
+
+  // ---- audition ----
+
+  function firstNote(id) {
+    for (const name of ['A', 'B']) {
+      const hit = pattern.sections[name]?.steps[id]?.find(Boolean);
+      if (hit) return hit.p;
+    }
+    return DEFAULT_BASS_NOTE;
+  }
+
+  function playNow(id, opts) {
+    const t = context.currentTime + 0.005;
+    const p = opts.p ?? (isPitched(id) ? firstNote(id) : 0);
+    playVoice(context, mixer.auditionInput(id), id, t, auditionVoices, {
+      p, v: opts.v, samples: sampleVoices,
+    });
+  }
+
   const clock = {
     get bpm() { return pattern.bpm; },
     setBpm,
-    get secondsPerStep() { return secondsPerStep(tempoOverride ?? pattern.bpm); },
+    get secondsPerStep() { return spbNow(); },
     get swing() { return pattern.swing; },
     get isPlaying() { return playing; },
   };
-
-  function playNow(trackId, midi) {
-    const t = context.currentTime + 0.005;
-    let note;
-    if (trackId === 'bass') {
-      note = midi ?? pattern.bassNotes.find((_, i) => pattern.steps.bass[i]) ?? DEFAULT_BASS_NOTE;
-    }
-    playVoice(context, mixer.auditionInputs[trackId], trackId, t, auditionVoices, { note });
-  }
 
   return {
     get context() { return context; },
@@ -216,47 +373,82 @@ export function createEngine(options = {}) {
     setPattern(p) {
       const prevBpm = pattern.bpm;
       pattern = normalizePattern(p);
+      if (!pattern.sections[editSection]) editSection = 'A';
       applyMixer();
       applyMasterVolume();
       applyFx();
       if (pattern.bpm !== prevBpm) emitState();
       emitPattern();
     },
-    toggleStep(trackId, stepIndex) {
-      assertTrack(trackId);
-      const i = assertStep(stepIndex);
-      pattern.steps[trackId][i] = !pattern.steps[trackId][i];
-      emitPattern();
-      return pattern.steps[trackId][i];
-    },
-    setBassNote(stepIndex, midi) {
-      const i = assertStep(stepIndex);
+
+    addTrack,
+    removeTrack,
+    moveTrack,
+    toggleStep,
+    setStep,
+    getStep,
+    /** Shortcut for setStep('bass', step, { p: midi }). */
+    setBassNote(step, midi) {
       assertBassNote(midi);
-      if (pattern.bassNotes[i] !== midi) { pattern.bassNotes[i] = midi; emitPattern(); }
-      return midi;
+      return setStep('bass', step, { p: midi }).p;
     },
-    /** Play a sound now, ignoring mute/solo. Call from a user gesture. */
-    trigger(trackId, opts = {}) {
-      assertTrack(trackId);
-      const midi = opts?.midi;
-      if (midi != null) assertBassNote(midi);
-      if (context && context.state === 'running') { playNow(trackId, midi); return; }
-      resume().then(() => playNow(trackId, midi)).catch((e) => console.error(e));
+
+    get editSection() { return editSection; },
+    setEditSection,
+    setSectionLength,
+    setSectionB,
+    setChain,
+
+    /** Play a sound now, ignoring mute/solo. Any voice or sample id. Call from a user gesture. */
+    trigger(id, opts = {}) {
+      if (!isTrackId(id)) throw new Error(`Unknown track: ${id}`);
+      const o = { ...opts };
+      if (o.midi != null) { o.p = o.midi; delete o.midi; }
+      if (o.p != null && isPitched(id)) assertBassNote(o.p);
+      if (context && context.state === 'running') { playNow(id, o); return; }
+      resume().then(() => playNow(id, o)).catch((e) => console.error(e));
     },
+
+    /** map: { [smpId]: { buffer, start, end, gain, pitch, reverse, fadeIn, fadeOut } } */
+    setSampleVoices(map) {
+      sampleVoices = { ...(map || {}) };
+      registerSampleVoices(sampleVoices);
+    },
+    get sampleVoices() { return sampleVoices; },
 
     setBpm,
     setSwing,
     setTrackVolume,
     setMute,
     setSolo,
+    setTrackSwing,
+    setTrackNudge,
     setMasterVolume,
     setFx,
     setTrackSend,
 
-    getCurrentStep() { return playing ? scheduler.getCurrentStep() : -1; },
-    /** Context time of the next pattern downbeat at or after minTime; null when stopped. */
+    /** Step in the playing section, -1 when stopped. */
+    getCurrentStep() {
+      const loc = playing ? scheduler.getCurrentInfo() : null;
+      return loc ? loc.step : -1;
+    },
+    /** { section, step, chainIndex } of what is sounding now, or null. */
+    getPlayPosition() {
+      const loc = playing ? scheduler.getCurrentInfo() : null;
+      return loc ? { section: loc.section, step: loc.step, chainIndex: loc.chainIndex } : null;
+    },
+    /** Context time of the next bar line (16 steps, counted across the chain) at or after minTime; null when stopped. */
     getNextBarTime(minTime = context ? context.currentTime : 0) {
       return playing && scheduler.running ? scheduler.getNextBarTime(minTime) : null;
+    },
+    /**
+     * Loop position (step counted across the chain) and pass that play at the
+     * grid time `time`, e.g. a take's bar 1; null when stopped. Pass both to
+     * offline renders (startPos, startPass) so they continue from there.
+     */
+    getLoopPositionAt(time) {
+      const at = playing ? scheduler.getPositionAt(time) : null;
+      return at ? { pos: at.step, pass: at.pass } : null;
     },
     /** No steps at or after this context time until the next start(); null clears. */
     setEndTime(time) {
@@ -269,7 +461,7 @@ export function createEngine(options = {}) {
       applyFx();
     },
     get tempoOverride() { return tempoOverride; },
-    /** Step 0 lands on each { at, period? } context time while playing; null clears. start() and stop() clear it. */
+    /** A bar line lands on each { at, period? } context time while playing; null clears. start() and stop() clear it. */
     setBarAnchors(list) {
       scheduler.setAnchors(list);
     },

@@ -330,3 +330,147 @@ take still lines up after you change speed. Changing the loop start or speed aft
 - `playTake(id, { withBeat: true })` on a remix take plays its snapshot (song + synced beat), not the live deck.
 - Loop off: the take stops at the last whole bar before the song ends (`take.bars` can be less than `booth.bars`);
   with less than one bar of song left after the loop start, `record()` resolves `null`.
+
+## Grooves (pattern version 4)
+
+### Pattern shape
+```js
+{
+  version: 4,
+  bpm, swing, master, fx,                 // as before; fx.sends keyed by every id in `tracks`
+  tracks: ['kick', 'snare', 'hat', ...],  // rows shown, in order; 1..16 ids from VOICES or sample ids ('smp-xxxx')
+  mixer: { [id]: { volume, mute, solo, swing: null | 0..0.6, nudge: -0.5..0.5 } },
+                                          // swing null = use the pattern swing; nudge in steps (+ = late)
+  sections: { A: Section, B: Section | null },
+  chain: ['A'] | ['A', 'B'] | ...,        // 1..8 entries of 'A' / 'B'; the loop plays them in order
+}
+Section = { length: 16 | 32, steps: { [id]: (Step | null)[length] } }   // null = off
+Step    = { v: 0..1,        // velocity, default 0.8 ("soft" 0.5, "accent" 1)
+            r: 1 | 2 | 3 | 4,  // roll: hits inside the step, evenly spaced
+            c: 0..1,        // chance it plays each pass, default 1
+            p: number,      // pitch: semitones -12..12 for drums/samples; for 'bass' the MIDI note (BASS_NOTES)
+            f: bool }       // flam: a softer hit ~20 ms before
+```
+- A bar is still 16 steps. Loop length = sum of the chained sections' lengths. `getNextBarTime`, booth takes and
+  `renderBeat({ bars })` count bars of 16 steps across the chain.
+- Version 1 to 3 patterns load as section A (length 16), chain ['A'], tracks = the old 8, steps from the old
+  booleans (v 0.8, or the old groove velocities for hats/shaker so they sound the same), bass p from bassNotes.
+- Chance uses a seeded random per pass so offline renders are repeatable for the same pattern.
+
+### Voices
+```js
+import { VOICES, VOICE_IDS } from './audio/engine.js';
+VOICES // [{ id, name, group: 'drums' | 'perc' | 'bass', pitched: bool }]
+// kick 'Kick', snare 'Snare', clap 'Clap', hat 'Closed hat', openhat 'Open hat', rim 'Rim', shaker 'Shaker',
+// bass '808 bass', tomlo 'Low tom', tomhi 'High tom', crash 'Crash', ride 'Ride', cowbell 'Cowbell',
+// conga 'Conga', snap 'Snap', logdrum 'Log drum' (amapiano, pitched like the 808 but woody/short)
+```
+`TRACKS` stays exported as the original 8 for older code; new code uses `VOICES` and `pattern.tracks`.
+
+### Engine
+```js
+engine.addTrack(id)                 // voice or sample id; returns false if already there or 16 tracks
+engine.removeTrack(id)
+engine.moveTrack(id, toIndex)
+engine.toggleStep(id, step)         // in the edited section; on = default Step; returns new boolean
+engine.setStep(id, step, partial | null)   // merge into the step (turns it on) or clear it; returns the Step or null
+engine.getStep(id, step)            // Step | null (edited section)
+engine.editSection                  // 'A' | 'B'; engine.setEditSection(name)
+engine.setSectionLength(name, 16 | 32)   // 16 -> 32 copies the bar; 32 -> 16 keeps the first bar
+engine.setSectionB(on, { copyFrom = 'A' })   // create/remove B; removing B sets chain to ['A']
+engine.setChain(list)
+engine.setTrackSwing(id, x | null); engine.setTrackNudge(id, steps)
+engine.getPlayPosition()            // { section, step, chainIndex } or null when stopped (UI playhead)
+engine.trigger(id, { p, v })        // audition, any voice or sample
+// unchanged: setBpm, setSwing, setTrackVolume, setMute, setSolo, setMasterVolume, setFx, setTrackSend,
+// start/stop, onStateChange, onPatternChange; getCurrentStep() returns the step in the playing section.
+// setBassNote(step, midi) stays as a shortcut for setStep('bass', step, { p: midi }).
+```
+
+### Groove tools (pure, src/audio/groove.js)
+```js
+humanize(pattern, amount)           // new pattern: small random velocity and timing (nudge-free, per step) changes
+randomizeTrack(pattern, id, { density = 0.3, seed, section = 'A' })   // fresh row for that track in that section; the UI passes the edited section
+makeFill(pattern, { from = 'A' })   // new pattern: B = copy of A with a fill in its last beat, chain ['A','A','A','B']
+clearTrack(pattern, id, { section })   // one section, or every section when section is left out
+```
+All return normalized copies; the UI applies them with `engine.setPattern`.
+
+### Samples
+```js
+import { createSampler } from './audio/sampler.js';
+const sampler = createSampler(engine, { booth });   // registers sample voices with the engine
+await sampler.fromFile(file)        // decode; rejects 'decode-failed' | 'too-long' (> 30 s source) | 'too-many'
+await sampler.record({ seconds })   // mic, up to 10 s, via booth's open mic (opens it if needed)
+sampler.fromTake(takeId)            // a booth take's audio as a source
+// a source becomes a sample by choosing a region; auto-chop proposes regions at hits
+sampler.sources                     // [{ id, name, duration }]
+sampler.getPeaks(sourceId, columns) // like remix.getPeaks
+sampler.chop(sourceId, { max = 8 }) // [{ start, end }] from transients
+const id = sampler.createSample(sourceId, { start, end, name })   // returns 'smp-xxxx'; max 16 samples, max 10 s each
+sampler.samples                     // [{ id, name, start, end, gain, pitch, reverse, fadeIn, fadeOut, duration }]
+sampler.update(id, partial)         // gain 0..1, pitch -12..12, reverse, fadeIn/fadeOut seconds, start/end
+sampler.remove(id)                  // also removes the track from the pattern
+sampler.audition(id)
+await sampler.save() / await sampler.restore()   // IndexedDB: audio + settings survive a reload
+sampler.onChange(cb)
+// project files carry the pattern and its samples
+await sampler.exportProject(pattern) -> Blob   // JSON with the pattern and each used sample as base64 16-bit WAV
+await sampler.importProject(fileOrText) -> pattern   // restores samples, returns the pattern to setPattern
+```
+As built (differences and additions):
+- `fromFile`, `record`, `fromTake` resolve/return the new source `{ id, name, duration, channels, sampleRate }`.
+  `fromTake` is sync and throws `'no-take' | 'too-many' | 'silent'`; the take is silence-trimmed and cut to 30 s.
+- `record` rejects `'too-many' | 'busy' | 'silent' | 'no-mic'` or a mic error, resolves `null` when cancelled.
+  `sampler.recording`, `sampler.cancelRecord()`; progress for a bar: `booth.getClipProgress()` -> `{ elapsed, seconds } | null`.
+- `sampler.removeSource(id)`: samples made from it keep working on a copy of their own region (`sourceId` becomes
+  `null`, `start` 0; start/end can then only move inside that region).
+- `remove(id)` removes the track; if the engine keeps it (last track), its steps are cleared in every section.
+- `getPeaks(id, columns, { start, end })`: `id` is a source or a sample (its region); range in seconds. Cached, don't modify.
+- `chop(sourceId, { max, start, end })` to chop part of a source.
+- `createSample` throws `'no-source' | 'too-many'`. Defaults: gain 0.8, pitch 0, fadeIn 0, fadeOut 0.01. Pitch is
+  whole semitones; fades are fit inside the region. `samples` entries also carry `sourceId`; `sampler.getSample(id)`.
+- `audition(id)` calls `engine.trigger(id)`. `sampler.playRegion(sourceId, { start, end })` / `stopRegion()` /
+  `previewSourceId` play part of a source raw (for choosing a region).
+- Storage: saved 0.8 s after a change. Stores each sample's audio span per source as 16-bit PCM (mono if over 50 MB);
+  sources no sample uses are not saved, used ones come back trimmed. `restore()` merges into what is in memory.
+  Nothing is written until the store has been read once (a failed read is retried before the next write, so a
+  library that could not be loaded is never overwritten). `sampler.storage`: `'saved' | 'unsaved' | 'unavailable'`
+  (no IndexedDB or the last read/write failed: memory only, retried on the next change); changes fire `onChange`.
+  The UI shows that instead of calling `save()`.
+- `importProject` replaces the whole sample library (each sample gets its own new source) and rejects
+  `'not-a-project'` without touching it (also for sample rates outside 8..192 kHz or more audio than 16 x 10 s
+  stereo at 48 kHz).
+- Booth additions: `booth.captureClip({ seconds })` -> `{ samples, sampleRate } | null` (raw mic, no beat, max 10 s;
+  stops a take preview and the remix deck first; `record`, `playTake`, `setBacking`, `importTake`, `setInputDevice`
+  and `captureClip` reject `'busy'` while a take or clip records), `booth.cancelClip()`, `booth.capturingClip`,
+  `booth.getTakeAudio(takeId)` -> `{ samples, sampleRate, name }` (dry, latency compensated).
+
+Patterns that reference a missing sample keep the row (shown as "missing"), silent until a sample with that id
+exists. `renderBeat`, the booth mix and the remix beat include samples through the engine registry.
+
+### Implementation notes (where the engine differs from or adds to the above)
+- Velocity: `v` 0.8 plays a voice at its normal level (gain = v / 0.8). Upgraded and newly toggled hats and
+  shakers keep the old accent shape as 0.8 x (0.85 / 0.7 / 0.5) = 0.68 / 0.56 / 0.4.
+- `logdrum` `p` is a MIDI note from `BASS_NOTES` like the 808; it sounds an octave higher.
+- Steps may carry `t` (micro timing in steps, -0.25..0.25), written only by `humanize` and only stored when not 0.
+- Groove tools take an optional last argument: `humanize(p, amount, { seed })`,
+  `randomizeTrack(p, id, { density, seed, section = 'A' })`, `makeFill(p, { from, seed })`,
+  `clearTrack(p, id, { section })` (no section = every section). Without a seed each call differs.
+- `setChain` drops entries that are not 'A' or an existing 'B' (max 8) and throws only if nothing is left.
+- `removeTrack` refuses to remove the last track (returns false). `toggleStep`/`setStep`/`getStep` throw for ids not
+  in `pattern.tracks`; `trigger` accepts any voice or 'smp-' id (`{ midi }` still works for the 808).
+- `engine.sampleVoices` returns the registered map. `renderBeat`, booth mixes (`renderMix`) and remix renders
+  default to it; pass `samples` (renderBeat) or `sampleVoices` (renderMix, remix render options) to override.
+- `playSample` and a cached `reversedBuffer` live in `src/audio/samplevoice.js`.
+- A pattern object with a top-level `steps` object is read as the old shape, even if it also has `sections`.
+- `engine.getLoopPositionAt(time)` -> `{ pos, pass }` (loop step across the chain and pass at that grid time) or
+  null. `makeTake(raw, { ..., loop })` stores it as `meta.loopPos` / `meta.loopPass`; `renderMix` starts the beat
+  there (`renderPatternOffline` options `startPos`, `startPass`), so takes over a longer loop or with chance
+  steps mix with what was heard.
+- If the loop gets shorter while playing (32 -> 16, B removed, shorter chain) the beat rests until the next bar
+  line and starts a new pass.
+- `beatTail(pattern, samples)` and `soundTail(pattern, samples)` include the longest voice (crash 1.6 s) or
+  sample region the pattern uses; renderMix and remix renders use them too.
+- The log drum is monophonic like the 808 and slides between adjacent different notes; slides only start from
+  a note that actually played on the step before.

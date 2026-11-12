@@ -6,13 +6,17 @@ import {
   createEngine, TRACKS, STEPS, BASS_NOTES, MIN_BPM, MAX_BPM,
 } from '../src/audio/engine.js';
 import { swingOffset, volumeToGain } from '../src/audio/constants.js';
+import { normalizePattern } from '../src/audio/pattern.js';
 import { Scheduler } from '../src/audio/scheduler.js';
+import V3 from './fixtures/v3-presets.json';
 
 // offline renders with convolution reverb are slow in Node under load
 vi.setConfig({ testTimeout: 30000 });
 
 const SR = 44100;
-const preset = PRESETS.afroBass.pattern;
+const preset = normalizePattern(V3.afroBass);
+const OLD = ['afroBass', 'trap', 'boomBap'].map((k) => normalizePattern(V3[k]));
+const isOn = (p, id, i, section = 'A') => !!p.sections[section].steps[id][i];
 const on = (...idx) => Array.from({ length: 16 }, (_, i) => idx.includes(i));
 
 function stats(buffer) {
@@ -47,16 +51,16 @@ const render = (pattern, opts = {}) =>
   renderPatternOffline(pattern, { bars: 2, sampleRate: SR, OfflineAudioContext, ...opts });
 
 describe('preset renders', () => {
-  for (const [key, { name, pattern }] of Object.entries(PRESETS)) {
-    if (key === 'empty') {
-      it('empty preset is silent', async () => {
-        expect(name).toBe('Empty');
-        expect(Object.values(pattern.steps).flat().some(Boolean)).toBe(false);
-        const s = stats(await render(pattern, { bars: 1, tail: 0.1 }));
-        expect(s.peak).toBe(0);
-      });
-      continue;
-    }
+  it('empty preset is silent', async () => {
+    const { name, pattern } = PRESETS.empty;
+    expect(name).toBe('Empty');
+    expect(Object.values(pattern.sections.A.steps).flat().some(Boolean)).toBe(false);
+    const s = stats(await render(pattern, { bars: 1, tail: 0.1 }));
+    expect(s.peak).toBe(0);
+  });
+
+  for (const key of ['afroBass', 'trap', 'boomBap']) {
+    const { name, pattern } = PRESETS[key];
     it(`${name} is audible and does not clip`, async () => {
       const buf = await render(pattern);
       const s = stats(buf);
@@ -69,15 +73,17 @@ describe('preset renders', () => {
   }
 
   it('preset tempos and swing', () => {
-    expect(Object.keys(PRESETS)).toEqual(['afroBass', 'trap', 'boomBap', 'empty']);
+    expect(Object.keys(PRESETS)).toEqual(expect.arrayContaining(['afroBass', 'trap', 'boomBap', 'empty']));
     expect(PRESETS.afroBass.pattern.bpm).toBe(104);
     expect(PRESETS.trap.pattern.bpm).toBe(140);
     expect(PRESETS.boomBap.pattern.bpm).toBe(90);
     expect(PRESETS.boomBap.pattern.swing).toBeGreaterThanOrEqual(0.25);
     expect(PRESETS.boomBap.pattern.swing).toBeLessThanOrEqual(0.35);
     for (const { pattern } of Object.values(PRESETS)) {
-      expect(pattern.version).toBe(3);
-      for (const n of pattern.bassNotes) expect(BASS_NOTES.map((b) => b.midi)).toContain(n);
+      expect(pattern.version).toBe(4);
+      for (const sec of [pattern.sections.A, pattern.sections.B]) {
+        for (const s of sec?.steps.bass || []) if (s) expect(BASS_NOTES.map((b) => b.midi)).toContain(s.p);
+      }
     }
   });
 });
@@ -175,7 +181,7 @@ describe('mixer and swing', () => {
     const spb = 60 / preset.bpm / 4;
     const expected = [];
     for (let bar = 0; bar < 2; bar++) {
-      preset.steps.kick.forEach((hit, i) => {
+      preset.sections.A.steps.kick.forEach((hit, i) => {
         if (hit) expected.push(Math.round(((bar * 16 + i) * spb + swingOffset(i, preset.swing, spb)) * SR));
       });
     }
@@ -234,19 +240,20 @@ describe('engine', () => {
     const offState = engine.onStateChange((s) => states.push(s));
     const offPattern = engine.onPatternChange((p) => patterns.push(p));
 
-    engine.setPattern(PRESETS.boomBap.pattern);
+    const boomBap = OLD[2];
+    engine.setPattern(boomBap);
     expect(engine.clock.bpm).toBe(90);
     expect(engine.clock.secondsPerStep).toBeCloseTo(60 / 90 / 4, 9);
     expect(patterns.length).toBe(1);
-    expect(patterns[0]).toEqual(PRESETS.boomBap.pattern);
+    expect(patterns[0]).toEqual(boomBap);
     expect(states.at(-1)).toEqual({ isPlaying: false, bpm: 90 });
     expect(engine.master.gain.value).toBeCloseTo(0.7, 3);
 
     const p = engine.getPattern();
-    p.steps.kick[1] = true;
+    p.sections.A.steps.kick[1] = { v: 1, r: 1, c: 1, p: 0, f: false };
     p.mixer.kick.volume = 0;
-    expect(engine.getPattern().steps.kick[1]).toBe(false);
-    expect(engine.getPattern().mixer.kick.volume).toBe(PRESETS.boomBap.pattern.mixer.kick.volume);
+    expect(isOn(engine.getPattern(), 'kick', 1)).toBe(false);
+    expect(engine.getPattern().mixer.kick.volume).toBe(boomBap.mixer.kick.volume);
 
     expect(engine.toggleStep('clap', 1)).toBe(true);
     expect(engine.toggleStep('clap', 1)).toBe(false);
@@ -254,7 +261,7 @@ describe('engine', () => {
     expect(() => engine.toggleStep('kick', 16)).toThrow();
 
     expect(engine.setBassNote(3, 45)).toBe(45);
-    expect(engine.getPattern().bassNotes[3]).toBe(45);
+    expect(engine.getPattern().sections.A.steps.bass[3].p).toBe(45);
     expect(() => engine.setBassNote(3, 34)).toThrow(); // A#1 not in A minor
     expect(() => engine.setBassNote(3, 60)).toThrow();
     expect(() => engine.trigger('bass', { midi: 34 })).toThrow();
@@ -283,7 +290,7 @@ describe('engine', () => {
     expect(last.mixer.hat.volume).toBe(0);
     expect(last.mixer.rim.mute).toBe(true);
     expect(last.mixer.shaker.solo).toBe(true);
-    expect(last.bassNotes[3]).toBe(45);
+    expect(last.sections.A.steps.bass[3].p).toBe(45);
     expect(last).toEqual(engine.getPattern());
 
     // no event when nothing changes
@@ -305,11 +312,11 @@ describe('engine', () => {
     const engine = createEngine({ context: new OfflineAudioContext(2, SR, SR) });
     engine.setPattern({ bpm: 95, steps: { kick: on(0), snare: on(4), hat: on(2), bass: on(0) }, bassNotes: new Array(16).fill(38) });
     const p = engine.getPattern();
-    expect(p.version).toBe(3);
+    expect(p.version).toBe(4);
     expect(p.bpm).toBe(95);
-    expect(p.steps.clap).toEqual(new Array(16).fill(false));
-    expect(p.bassNotes[0]).toBe(38);
-    expect(p.mixer.kick).toEqual({ volume: 0.8, mute: false, solo: false });
+    expect(p.sections.A.steps.clap).toEqual(new Array(16).fill(null));
+    expect(p.sections.A.steps.bass[0].p).toBe(38);
+    expect(p.mixer.kick).toEqual({ volume: 0.8, mute: false, solo: false, swing: null, nudge: 0 });
   });
 });
 
@@ -478,9 +485,8 @@ describe('transport', () => {
 
 describe('headroom, timing, slides', () => {
   it('no clipping with every fader at max', async () => {
-    for (const { name, pattern } of Object.values(PRESETS)) {
-      if (name === 'Empty') continue;
-      const hot = structuredClone(pattern);
+    for (const key of ['afroBass', 'trap', 'boomBap']) {
+      const hot = structuredClone(PRESETS[key].pattern);
       hot.master = 1;
       for (const ch of Object.values(hot.mixer)) ch.volume = 1;
       const s = stats(await render(hot));

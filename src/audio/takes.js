@@ -6,6 +6,8 @@ import { renderPatternOffline, measureImpulseDelay } from './offline.js';
 import { createMasterChain } from './sequence.js';
 import { normalizePattern } from './pattern.js';
 import { fxTail } from './fx.js';
+import { registeredSampleVoices } from './samplevoice.js';
+import { soundTail } from './export.js';
 import { createVoiceChain, voiceTail, vocalGain, DEFAULT_VOICE } from './voice.js';
 
 export { vocalGain };
@@ -31,13 +33,17 @@ const clampLatency = (ms) => Math.min(MAX_LATENCY_MS, Math.max(MIN_LATENCY_MS, m
 /**
  * raw: Float32Array starting PRE_ROLL before bar 1. autoLatencyMs is frozen
  * with the take: it describes the device the take was recorded on.
+ * loop: { pos, pass } of the beat at bar 1 (engine.getLoopPositionAt), so the
+ * mix plays the same part of a longer loop and the same chance hits.
  */
 export function makeTake(raw, {
-  id, name, bpm, bars, sampleRate, autoLatencyMs = 0, offsetMs = 0, createdAt = Date.now(),
+  id, name, bpm, bars, sampleRate, autoLatencyMs = 0, offsetMs = 0, createdAt = Date.now(), loop = null,
 }) {
   const duration = bars * barSeconds(bpm);
+  const loopPos = Number.isInteger(loop?.pos) && loop.pos >= 0 ? loop.pos : 0;
+  const loopPass = Number.isInteger(loop?.pass) && loop.pass >= 0 ? loop.pass : 0;
   const take = {
-    meta: { id, name, bars, bpm, duration, peak: 0, autoLatencyMs, createdAt },
+    meta: { id, name, bars, bpm, duration, peak: 0, autoLatencyMs, createdAt, loopPos, loopPass },
     raw,
     sampleRate,
     length: Math.round(duration * sampleRate),
@@ -94,7 +100,7 @@ const offlineCtor = (C) => {
  * Beat (pattern looped for the take's bars at the take's bpm, with its fx) +
  * vocal through the voice chain, all through the master chain.
  * opts: samples (processed aligned vocal; default dry), voice settings,
- * voiceDelay (frames, from measureVoiceDelay), OfflineAudioContext,
+ * voiceDelay (frames, from measureVoiceDelay), sampleVoices (default: the engine's), OfflineAudioContext,
  * renderBacking({ duration, sampleRate, startAt, tail, setup, OfflineAudioContext })
  * to render something else than the pattern under the vocal (the remix deck).
  */
@@ -124,13 +130,17 @@ export async function renderMix(pattern, take, latencyMs, opts = {}) {
     return trimStart(buf, voiceDelay, Ctor);
   }
   const p = normalizePattern({ ...pattern, bpm: take.meta.bpm });
-  const tail = Math.max(MIX_TAIL, fxTail(p.fx, p.bpm), voiceTail(voice, p.bpm));
+  const sampleVoices = opts.sampleVoices || registeredSampleVoices();
+  const tail = Math.max(MIX_TAIL, fxTail(p.fx, p.bpm), voiceTail(voice, p.bpm), soundTail(p, sampleVoices));
   const buf = await renderPatternOffline(p, {
     bars: take.meta.bars,
+    startPos: take.meta.loopPos || 0,
+    startPass: take.meta.loopPass || 0,
     sampleRate: take.sampleRate,
     channels: 2,
     tail,
     startAt,
+    samples: sampleVoices,
     OfflineAudioContext: Ctor,
     setup(ctx, bus) {
       const src = ctx.createBufferSource();

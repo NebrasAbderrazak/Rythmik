@@ -1,28 +1,50 @@
 // same voices, mixer, beat fx and master chain as the realtime engine, without timers
-import { STEPS, TRACK_IDS, secondsPerStep, swingOffset } from './constants.js';
+import { STEPS, secondsPerStep } from './constants.js';
 import {
-  playStep, createMasterChain, createMixer, applyMaster, createVoiceState,
+  playPosition, createMasterChain, createMixer, applyMaster, createVoiceState,
 } from './sequence.js';
-import { normalizePattern } from './pattern.js';
+import { normalizePattern, loopLength } from './pattern.js';
 import { createBeatFx } from './fx.js';
 
 /**
- * @param {object} [opts] bars, sampleRate, channels, tail (s), tracks (ids to keep),
- *   masterChain (false = straight to destination), OfflineAudioContext (constructor),
- *   startAt (s, beat starts this late; the render grows by the same amount),
- *   setup(ctx, bus) to add extra sources (may be async)
+ * Wires the pattern's beat bus (fx, mixer) into `bus` and returns
+ * play(pos, time, pass) for scheduling loop positions.
+ */
+export function createBeatPlayer(ctx, bus, p, bpm, { samples = {}, minTime = 0 } = {}) {
+  const fx = createBeatFx(ctx, bus);
+  fx.setTempo(bpm, false);
+  fx.apply(p.fx, false);
+  const mixer = createMixer(ctx, fx.input, fx.sends);
+  mixer.apply(p.mixer, false);
+  mixer.applySends(p.fx.sends, false);
+  const voices = createVoiceState(false);
+  const spb = secondsPerStep(bpm);
+  return (pos, time, pass) => playPosition(ctx, mixer, p, pos, time, voices, { spb, pass, minTime, samples });
+}
+
+/**
+ * @param {object} [opts] bars (of 16 steps, counted across the chain), sampleRate, channels,
+ *   tail (s), tracks (ids to keep), samples ({ [smpId]: def }), masterChain (false = straight
+ *   to destination), OfflineAudioContext (constructor), startAt (s, beat starts this late;
+ *   the render grows by the same amount), startPos / startPass (where in the loop to begin, see
+ *   engine.getLoopPositionAt), setup(ctx, bus) to add extra sources (may be async)
  * @returns {Promise<AudioBuffer>}
  */
 export async function renderPatternOffline(pattern, opts = {}) {
   const {
     bars = 2, sampleRate = 44100, channels = 2, tail = 1.2,
-    tracks = TRACK_IDS, masterChain = true, startAt = 0,
+    tracks = null, masterChain = true, startAt = 0, samples = {}, startPos = 0, startPass = 0,
   } = opts;
   const Ctor = opts.OfflineAudioContext || globalThis.OfflineAudioContext;
   if (!Ctor) throw new Error('OfflineAudioContext not available');
 
   const p = normalizePattern(pattern);
-  for (const id of TRACK_IDS) if (!tracks.includes(id)) p.steps[id].fill(false);
+  if (tracks) {
+    for (const sec of Object.values(p.sections)) {
+      if (!sec) continue;
+      for (const id of p.tracks) if (!tracks.includes(id)) sec.steps[id].fill(null);
+    }
+  }
   const spb = secondsPerStep(p.bpm);
   const totalSteps = bars * STEPS;
   const duration = startAt + totalSteps * spb + tail;
@@ -34,17 +56,11 @@ export async function renderPatternOffline(pattern, opts = {}) {
     applyMaster(ctx, chain.master, p.master, false);
     bus = chain.master;
   }
-  const fx = createBeatFx(ctx, bus);
-  fx.setTempo(p.bpm, false);
-  fx.apply(p.fx, false);
-  const mixer = createMixer(ctx, fx.input, fx.sends);
-  mixer.apply(p.mixer, false);
-  mixer.applySends(p.fx.sends, false);
-
-  const voices = createVoiceState(false);
+  const play = createBeatPlayer(ctx, bus, p, p.bpm, { samples, minTime: startAt });
+  const len = loopLength(p);
   for (let i = 0; i < totalSteps; i++) {
-    const step = i % STEPS;
-    playStep(ctx, mixer.inputs, p, step, startAt + i * spb + swingOffset(step, p.swing, spb), voices);
+    const pos = startPos + i;
+    play(pos % len, startAt + i * spb, startPass + Math.floor(pos / len));
   }
   if (opts.setup) await opts.setup(ctx, bus);
   return ctx.startRendering();

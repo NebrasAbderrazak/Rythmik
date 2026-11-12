@@ -12,6 +12,50 @@ export const TRACKS = [
 ];
 export const TRACK_IDS = TRACKS.map((t) => t.id);
 
+export const VOICES = [
+  { id: 'kick', name: 'Kick', group: 'drums', pitched: false },
+  { id: 'snare', name: 'Snare', group: 'drums', pitched: false },
+  { id: 'clap', name: 'Clap', group: 'drums', pitched: false },
+  { id: 'hat', name: 'Closed hat', group: 'drums', pitched: false },
+  { id: 'openhat', name: 'Open hat', group: 'drums', pitched: false },
+  { id: 'rim', name: 'Rim', group: 'perc', pitched: false },
+  { id: 'shaker', name: 'Shaker', group: 'perc', pitched: false },
+  { id: 'bass', name: '808 bass', group: 'bass', pitched: true },
+  { id: 'tomlo', name: 'Low tom', group: 'drums', pitched: false },
+  { id: 'tomhi', name: 'High tom', group: 'drums', pitched: false },
+  { id: 'crash', name: 'Crash', group: 'drums', pitched: false },
+  { id: 'ride', name: 'Ride', group: 'drums', pitched: false },
+  { id: 'cowbell', name: 'Cowbell', group: 'perc', pitched: false },
+  { id: 'conga', name: 'Conga', group: 'perc', pitched: false },
+  { id: 'snap', name: 'Snap', group: 'perc', pitched: false },
+  { id: 'logdrum', name: 'Log drum', group: 'bass', pitched: true },
+];
+export const VOICE_IDS = VOICES.map((v) => v.id);
+
+// pitched voices take a MIDI note from BASS_NOTES, the rest semitones
+export const isPitched = (id) => id === 'bass' || id === 'logdrum';
+export const isSampleId = (id) => typeof id === 'string' && /^smp-[A-Za-z0-9_-]{1,40}$/.test(id);
+export const isTrackId = (id) => VOICE_IDS.includes(id) || isSampleId(id);
+
+export const MAX_TRACKS = 16;
+export const SECTION_LENGTHS = [16, 32];
+export const MAX_CHAIN = 8;
+export const MAX_ROLL = 4;
+export const MAX_PITCH = 12;
+export const MAX_NUDGE = 0.5;
+export const DEFAULT_VELOCITY = 0.8;
+export const FLAM_SECONDS = 0.02;
+
+// hats and shakers used to play this accent shape; new steps keep it
+export function grooveVelocity(step) {
+  if (step % 4 === 0) return 0.85;
+  if (step % 2 === 0) return 0.7;
+  return 0.5;
+}
+
+// v is stored 0..1 with 0.8 as a normal hit, so 0.8 plays a voice at full level
+export const velocityGain = (v) => v / DEFAULT_VELOCITY;
+
 export const MIN_BPM = 60;
 export const MAX_BPM = 180;
 export const DEFAULT_BPM = 104;

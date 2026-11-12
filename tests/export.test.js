@@ -4,10 +4,11 @@ import {
   renderBeat, beatTail, EXPORT_BARS, DEFAULT_TAIL,
 } from '../src/audio/export.js';
 import { PRESETS } from '../src/audio/presets.js';
-import { emptyPattern, normalizePattern } from '../src/audio/pattern.js';
+import { emptyPattern, normalizePattern, defaultStep } from '../src/audio/pattern.js';
+import V3 from './fixtures/v3-presets.json';
 import { encodeWav } from '../src/audio/wav.js';
 import {
-  STEPS, TRACK_IDS, SWING_FACTOR, secondsPerStep,
+  STEPS, TRACK_IDS, VOICE_IDS, SWING_FACTOR, secondsPerStep,
 } from '../src/audio/constants.js';
 
 // offline renders with convolution reverb are slow in Node under load
@@ -42,13 +43,13 @@ function firstOnset(buf, threshold = 0.02, from = 0) {
 function single(bpm, track, step, swing = 0) {
   const p = emptyPattern(bpm);
   p.swing = swing;
-  p.steps[track][step] = true;
+  p.sections.A.steps[track][step] = defaultStep(track, step);
   return p;
 }
 
 describe('renderBeat', () => {
   it('length is bars * bar duration + tail', async () => {
-    const pattern = PRESETS.boomBap.pattern;
+    const pattern = normalizePattern(V3.boomBap);
     for (const bars of [1, 2]) {
       const buf = await beat(pattern, { bars, tail: 0.5 });
       expect(Math.abs(buf.length - (bars * barSeconds(pattern.bpm) + 0.5) * SR)).toBeLessThanOrEqual(1);
@@ -57,7 +58,7 @@ describe('renderBeat', () => {
 
   it('defaults to 4 bars and the default tail', async () => {
     const pattern = emptyPattern(140);
-    pattern.steps.kick[0] = true;
+    pattern.sections.A.steps.kick[0] = defaultStep('kick');
     const buf = await beat(pattern);
     expect(DEFAULT_TAIL).toBe(1.5);
     expect(Math.abs(buf.length - (4 * barSeconds(pattern.bpm) + DEFAULT_TAIL) * SR)).toBeLessThanOrEqual(1);
@@ -81,13 +82,12 @@ describe('renderBeat', () => {
     await expect(beat(PRESETS.trap.pattern, { bars: 3 })).rejects.toThrow(RangeError);
   });
 
-  for (const [key, { name, pattern }] of Object.entries(PRESETS)) {
-    if (key === 'empty') {
-      it('Empty renders silence', async () => {
-        expect(peak(await beat(pattern, { bars: 1 }))).toBe(0);
-      });
-      continue;
-    }
+  it('Empty renders silence', async () => {
+    expect(peak(await beat(PRESETS.empty.pattern, { bars: 1 }))).toBe(0);
+  });
+
+  for (const key of ['afroBass', 'trap', 'boomBap']) {
+    const { name, pattern } = PRESETS[key];
     it(`${name} is audible and peaks below 1.0`, async () => {
       const p = peak(await beat(pattern, { bars: 2 }));
       expect(p).toBeGreaterThan(0.05);
@@ -97,15 +97,15 @@ describe('renderBeat', () => {
 
   it('all tracks muted renders all zeros', async () => {
     const p = normalizePattern(PRESETS.trap.pattern);
-    for (const id of TRACK_IDS) p.mixer[id].mute = true;
+    for (const id of p.tracks) p.mixer[id].mute = true;
     expect(peak(await beat(p, { bars: 1 }))).toBe(0);
   });
 
-  it('every pad on at full volume and master at 180 BPM stays <= 1.0', async () => {
-    const p = emptyPattern(180);
+  it('every pad of every voice on at full volume and master at 180 BPM stays <= 1.0', async () => {
+    const p = normalizePattern({ ...emptyPattern(180), tracks: VOICE_IDS });
     p.master = 1;
-    for (const id of TRACK_IDS) {
-      p.steps[id].fill(true);
+    for (const id of VOICE_IDS) {
+      p.sections.A.steps[id] = Array.from({ length: 16 }, () => ({ ...defaultStep(id), v: 1 }));
       p.mixer[id].volume = 1;
     }
     const pk = peak(await beat(p, { bars: 2 }));
@@ -147,7 +147,7 @@ describe('renderBeat', () => {
   });
 
   it('encodes to a WAV with matching rate, channels and length', async () => {
-    const pattern = PRESETS.afroBass.pattern;
+    const pattern = normalizePattern(V3.afroBass);
     const bars = 2, tail = 0.5;
     const buf = await beat(pattern, { bars, tail });
     const view = new DataView(encodeWav(buf));
@@ -168,7 +168,7 @@ describe('renderBeat', () => {
     };
 
     it('Trap decays below -60 dBFS by the end', async () => {
-      expect(await endLevel(PRESETS.trap.pattern)).toBeLessThan(-60);
+      expect(await endLevel(normalizePattern(V3.trap))).toBeLessThan(-60);
     });
 
     for (const id of ['bass', 'openhat']) {

@@ -1,23 +1,31 @@
 // shared by the realtime engine and the offline renderer so both sound the same
-import { kick, snare, clap, hat, openhat, rim, shaker, bass } from './instruments.js';
 import {
-  STEPS, TRACK_IDS, DEFAULT_BASS_NOTE, volumeToGain,
+  kick, snare, clap, hat, openhat, rim, shaker, bass,
+  tomlo, tomhi, crash, ride, cowbell, conga, snap, logdrum,
+} from './instruments.js';
+import { playSample } from './samplevoice.js';
+import {
+  DEFAULT_BASS_NOTE, DEFAULT_VELOCITY, FLAM_SECONDS, MAX_NUDGE,
+  volumeToGain, velocityGain, swingOffset, isSampleId,
 } from './constants.js';
+import { loopLength, locate, MAX_STEP_SHIFT } from './pattern.js';
 
 export * from './constants.js';
-export { emptyPattern, normalizePattern } from './pattern.js';
+export { emptyPattern, normalizePattern, loopLength, locate } from './pattern.js';
 
 export const MASTER_BASE_GAIN = 0.7;
 const SMOOTH_TAU = 0.012;
+const RELEASE_MS = 12000; // longer than any sample or tail
+const ROLL_DECAY = 0.9; // each roll hit a little softer than the one before
+const FLAM_LEVEL = 0.55;
 
-function grooveVelocity(step) {
-  if (step % 4 === 0) return 0.85;
-  if (step % 2 === 0) return 0.7;
-  return 0.5;
-}
+const SYNTHS = {
+  kick, snare, clap, rim, shaker, tomlo, tomhi, crash, ride, cowbell, conga, snap,
+};
 
 export function createVoiceState(trackActive = true) {
-  return { bass: null, openhat: null, active: trackActive ? [] : null };
+  // seq counts played positions so a slide knows what rang on the step before
+  return { bass: null, logdrum: null, openhat: null, seq: 0, active: trackActive ? [] : null };
 }
 
 function track(ctx, voices, v) {
@@ -28,51 +36,117 @@ function track(ctx, voices, v) {
   return v;
 }
 
+/**
+ * One hit of a voice or sample. opts: v (stored velocity 0..1), p (semitones, or
+ * the MIDI note for bass/logdrum), samples ({ [smpId]: def } for sample tracks).
+ */
 export function playVoice(ctx, dest, trackId, time, voices, opts = {}) {
-  const step = opts.step ?? 0;
+  const v = opts.v ?? DEFAULT_VELOCITY;
+  const velocity = velocityGain(v);
+  const pitch = opts.p ?? 0;
   switch (trackId) {
-    case 'kick': return track(ctx, voices, kick(ctx, dest, time));
-    case 'snare': return track(ctx, voices, snare(ctx, dest, time));
-    case 'clap': return track(ctx, voices, clap(ctx, dest, time));
-    case 'rim': return track(ctx, voices, rim(ctx, dest, time));
-    case 'shaker':
-      return track(ctx, voices, shaker(ctx, dest, time, { velocity: grooveVelocity(step) }));
     case 'hat':
-      if (voices.openhat) { voices.openhat.choke(time); voices.openhat = null; }
-      return track(ctx, voices, hat(ctx, dest, time, { velocity: grooveVelocity(step) }));
+      // a closed hat after an open one closes it; one on the same hit leaves it ringing
+      if (voices.openhat && voices.openhat.startTime < time) {
+        voices.openhat.choke(time);
+        voices.openhat = null;
+      }
+      return track(ctx, voices, hat(ctx, dest, time, { velocity, pitch }));
     case 'openhat':
-      if (voices.openhat) voices.openhat.choke(time);
-      voices.openhat = track(ctx, voices, openhat(ctx, dest, time));
+      if (voices.openhat && voices.openhat.startTime < time) voices.openhat.choke(time);
+      voices.openhat = track(ctx, voices, openhat(ctx, dest, time, { velocity, pitch }));
       return voices.openhat;
     case 'bass':
-      if (voices.bass) voices.bass.choke(time);
-      voices.bass = track(ctx, voices, bass(ctx, dest, time, {
-        note: opts.note ?? DEFAULT_BASS_NOTE,
-      }));
-      return voices.bass;
+    case 'logdrum': {
+      // monophonic: a new note chokes the ringing one
+      voices[trackId]?.choke(time);
+      const make = trackId === 'bass' ? bass : logdrum;
+      voices[trackId] = track(ctx, voices, make(ctx, dest, time, { velocity, note: opts.p ?? DEFAULT_BASS_NOTE }));
+      voices[trackId].seq = voices.seq;
+      return voices[trackId];
+    }
     default:
+      if (SYNTHS[trackId]) return track(ctx, voices, SYNTHS[trackId](ctx, dest, time, { velocity, pitch }));
+      if (isSampleId(trackId)) {
+        const def = opts.samples?.[trackId];
+        return def ? track(ctx, voices, playSample(ctx, dest, time, def, { v, p: pitch })) : null;
+      }
       throw new Error(`Unknown track: ${trackId}`);
   }
 }
 
-// TRACK_IDS order matters: closed hat before open hat, so an open hat on the
-// same step survives. An 808 right after another 808 with a different note
-// slides the ringing one instead of retriggering.
-export function playStep(ctx, dests, pattern, step, time, voices) {
-  const s = pattern.steps;
-  for (const id of TRACK_IDS) {
-    if (!s[id]?.[step]) continue;
-    if (id === 'bass') {
-      const note = pattern.bassNotes?.[step] ?? DEFAULT_BASS_NOTE;
-      const prev = (step + STEPS - 1) % STEPS;
-      const prevBass = voices.bass;
-      const slid = s.bass[prev] && prevBass && prevBass.note !== note
-        && prevBass.slideTo?.(note, time);
-      if (!slid) playVoice(ctx, dests[id], id, time, voices, { step, note });
-    } else {
-      playVoice(ctx, dests[id], id, time, voices, { step });
+// a stable 0..1 per (pass, position, track), so chance is repeatable
+export function chanceRoll(pass, pos, id) {
+  let h = Math.imul(pass + 1, 0x85ebca6b) ^ Math.imul(pos + 1, 0xc2b2ae35);
+  for (let i = 0; i < id.length; i++) h = Math.imul(h ^ id.charCodeAt(i), 0x01000193);
+  h ^= h >>> 16;
+  h = Math.imul(h, 0x7feb352d);
+  h ^= h >>> 15;
+  h = Math.imul(h, 0x846ca68b);
+  h ^= h >>> 16;
+  return (h >>> 0) / 4294967296;
+}
+
+/** Seconds a step can sound before its grid time (negative nudge, flams). */
+export const maxLead = (spb) => (MAX_NUDGE + MAX_STEP_SHIFT) * spb + FLAM_SECONDS + 0.005;
+
+/** How early this pattern actually plays anything, so plain patterns are not scheduled sooner than needed. */
+export function patternLead(pattern, spb) {
+  let early = 0;
+  for (const id of pattern.tracks) {
+    const nudge = pattern.mixer[id]?.nudge || 0;
+    for (const sec of [pattern.sections.A, pattern.sections.B]) {
+      for (const s of sec?.steps[id] || []) {
+        if (!s) continue;
+        const shift = Math.max(0, -(nudge + (s.t || 0))) * spb + (s.f ? FLAM_SECONDS : 0);
+        if (shift > early) early = shift;
+      }
     }
   }
+  return early > 0 ? Math.min(early, maxLead(spb)) + 0.005 : 0;
+}
+
+/**
+ * Plays loop position `pos` (counted across the chain) whose grid time is
+ * `time`. Swing, nudge, rolls, flams and chance are applied here.
+ * opts: spb, pass (for chance), minTime (no hit earlier than this), samples.
+ * Returns { chainIndex, section, step }.
+ * An 808 or log drum note right after one that played on the step before, with
+ * a different note, slides the ringing one instead of retriggering.
+ */
+export function playPosition(ctx, mixer, pattern, pos, time, voices, opts = {}) {
+  const { spb, pass = 0, minTime = -Infinity, samples } = opts;
+  const len = loopLength(pattern);
+  const at = ((pos % len) + len) % len;
+  const loc = locate(pattern, at);
+  const steps = pattern.sections[loc.section].steps;
+  voices.seq++;
+  for (const id of pattern.tracks) {
+    const s = steps[id]?.[loc.step];
+    if (!s) continue;
+    if (s.c < 1 && chanceRoll(pass, at, id) >= s.c) continue;
+    const ch = pattern.mixer[id] || {};
+    const swing = ch.swing ?? pattern.swing;
+    const t0 = time + swingOffset(loc.step, swing, spb) + ((ch.nudge || 0) + (s.t || 0)) * spb;
+    const dest = mixer.input(id);
+    const play = (t, v) => playVoice(ctx, dest, id, Math.max(t, minTime), voices, { v, p: s.p, samples });
+
+    if (s.f) play(t0 - FLAM_SECONDS, s.v * FLAM_LEVEL);
+    for (let k = 0; k < s.r; k++) {
+      const t = t0 + (k * spb) / s.r;
+      const v = s.v * ROLL_DECAY ** k;
+      if (k === 0 && !s.f && (id === 'bass' || id === 'logdrum')) {
+        const ringing = voices[id];
+        if (ringing && ringing.seq === voices.seq - 1 && ringing.note !== s.p
+          && ringing.slideTo?.(s.p, Math.max(t, minTime))) {
+          ringing.seq = voices.seq;
+          continue;
+        }
+      }
+      play(t, v);
+    }
+  }
+  return loc;
 }
 
 // pending voices are cancelled, long ringing ones faded, short drums left alone
@@ -84,6 +158,7 @@ export function silenceVoices(voices, now) {
   }
   if (voices.active) voices.active = [];
   voices.bass = null;
+  voices.logdrum = null;
   voices.openhat = null;
 }
 
@@ -147,18 +222,33 @@ function setParam(ctx, param, value, smooth) {
 }
 
 export function isAudible(mixer, trackId) {
-  const anySolo = TRACK_IDS.some((id) => mixer[id]?.solo);
-  const ch = mixer[trackId] || {};
+  const ch = mixer[trackId];
+  if (!ch) return false;
+  const anySolo = Object.values(mixer).some((c) => c?.solo);
   return !ch.mute && (!anySolo || !!ch.solo);
 }
 
-// gate (mute/solo) -> fader -> destination, fader -> send gains -> fx buses.
-// Auditions skip the gate so a muted pad can still be previewed.
+/**
+ * gate (mute/solo) -> fader -> destination, fader -> send gains -> fx buses.
+ * Channels are made on first use, so any track id works. Auditions skip the
+ * gate so a muted pad can still be previewed.
+ */
 export function createMixer(ctx, destination, sendDests = null) {
   const channels = {};
-  const inputs = {};
-  const auditionInputs = {};
-  for (const id of TRACK_IDS) {
+  let lastMixer = {};
+  let lastSends = {};
+
+  function applyChannel(id, smooth) {
+    const c = channels[id];
+    setParam(ctx, c.fader.gain, volumeToGain(lastMixer[id]?.volume), smooth);
+    setParam(ctx, c.gate.gain, isAudible(lastMixer, id) ? 1 : 0, smooth);
+    for (const [kind, node] of Object.entries(c.sends)) {
+      setParam(ctx, node.gain, lastSends[id]?.[kind] ?? 0, smooth);
+    }
+  }
+
+  function channel(id) {
+    if (channels[id]) return channels[id];
     const gate = ctx.createGain();
     const fader = ctx.createGain();
     gate.connect(fader).connect(destination);
@@ -171,27 +261,40 @@ export function createMixer(ctx, destination, sendDests = null) {
       }
     }
     channels[id] = { gate, fader, sends };
-    inputs[id] = gate;
-    auditionInputs[id] = fader;
+    applyChannel(id, false);
+    return channels[id];
   }
+
+  // a track left the pattern: close its gate now, free the nodes once anything
+  // still ringing through the fader (an audition, a long sample) is done
+  function release(id) {
+    const c = channels[id];
+    delete channels[id];
+    setParam(ctx, c.gate.gain, 0, true);
+    const free = () => {
+      for (const n of [c.gate, c.fader, ...Object.values(c.sends)]) {
+        try { n.disconnect(); } catch { /* already disconnected */ }
+      }
+    };
+    setTimeout(free, RELEASE_MS);
+  }
+
   return {
     channels,
-    inputs,
-    auditionInputs,
+    input: (id) => channel(id).gate,
+    auditionInput: (id) => channel(id).fader,
     apply(mixer, smooth = true) {
-      for (const id of TRACK_IDS) {
-        const ch = mixer[id] || {};
-        setParam(ctx, channels[id].fader.gain, volumeToGain(ch.volume), smooth);
-        setParam(ctx, channels[id].gate.gain, isAudible(mixer, id) ? 1 : 0, smooth);
+      lastMixer = mixer || {};
+      for (const id of Object.keys(channels)) if (!lastMixer[id]) release(id);
+      for (const id of Object.keys(lastMixer)) {
+        if (!channels[id]) channel(id);
+        else applyChannel(id, smooth);
       }
     },
     /** sends: { [trackId]: { reverb, echo } } */
     applySends(sends, smooth = true) {
-      for (const id of TRACK_IDS) {
-        for (const [kind, node] of Object.entries(channels[id].sends)) {
-          setParam(ctx, node.gain, sends?.[id]?.[kind] ?? 0, smooth);
-        }
-      }
+      lastSends = sends || {};
+      for (const id of Object.keys(channels)) applyChannel(id, smooth);
     },
   };
 }
