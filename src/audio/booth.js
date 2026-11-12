@@ -15,6 +15,8 @@ const BAR_CHOICES = [2, 4, 8, 16];
 export const MAX_TAKES = 12;
 export const MIN_LATENCY_OFFSET = -200;
 export const MAX_LATENCY_OFFSET = 200;
+/** Longest captureClip(), in seconds. */
+export const MAX_CLIP_SECONDS = 10;
 export { encodeWav } from './wav.js';
 
 // knob drags on tune/retune/key: wait for a pause before (re)starting a tuning run
@@ -136,6 +138,7 @@ export function createBooth(engine, opts = {}) {
   let selectedId = null;
   let takeCount = 0;
   let rec = null;
+  let clip = null; // captureClip() in progress
   let preview = null;
   let preferredId = null; // null = system default
   let lastFallback = false;
@@ -261,7 +264,7 @@ export function createBooth(engine, opts = {}) {
 
   /** Remembers the input; reopens right away when the mic is open. Rejects with 'busy' while recording. */
   async function setInputDevice(deviceId) {
-    if (rec) throw new Error('busy');
+    if (rec || clip) throw new Error('busy');
     const id = normId(deviceId);
     preferredId = id;
     if (opening) await opening.catch(() => {});
@@ -304,6 +307,7 @@ export function createBooth(engine, opts = {}) {
   function closeMic() {
     micGen++;
     if (rec) cancel();
+    if (clip) cancelClip();
     const changed = !!mic || monitoring;
     monitoring = false;
     const m = mic;
@@ -396,6 +400,7 @@ export function createBooth(engine, opts = {}) {
     const start = engine.getNextBarTime(ctx.currentTime + MIN_LEAD + ahead);
     if (start == null) { cancel(); return false; }
     Object.assign(r, {
+      loop: engine.getLoopPositionAt?.(start) ?? null,
       ctx, bpm, bar, bars, countIn, start, first: start - ahead, end: start + bars * bar,
     });
     if (r.startedBeat) engine.setEndTime(r.end);
@@ -444,7 +449,7 @@ export function createBooth(engine, opts = {}) {
    * (MAX_TAKES kept: delete one first)).
    */
   async function record() {
-    if (rec) throw new Error('busy');
+    if (rec || clip) throw new Error('busy');
     if (takes.length >= MAX_TAKES) throw new Error('too-many-takes');
     if (!mic) throw new Error('mic-closed');
     const snap = backing === 'remix' ? remixSnapshot() : null;
@@ -490,6 +495,7 @@ export function createBooth(engine, opts = {}) {
         bpm, bars: r.bars, sampleRate: sr,
         autoLatencyMs: autoLatencyMs(),
         offsetMs,
+        loop: r.loop,
       });
       attachBacking(take, r.snap);
       takes.push(take);
@@ -557,6 +563,56 @@ export function createBooth(engine, opts = {}) {
     return { bar, beat, totalBars: total, countIn: false, startTime: r.start };
   }
 
+  // ---- clips (raw mic audio for the sampler) ----
+
+  /**
+   * Records `seconds` (up to MAX_CLIP_SECONDS) of raw mic input: no beat, no
+   * count-in, no latency shift. A take preview (and the beat it started) and the
+   * remix deck stop first so they don't bleed into the mic; a beat the user
+   * started keeps playing. Resolves { samples, sampleRate }, or null when
+   * cancelled. Rejects Error('busy' | 'mic-closed').
+   */
+  async function captureClip({ seconds = 4 } = {}) {
+    if (rec || clip) throw new Error('busy');
+    if (!mic) throw new Error('mic-closed');
+    const secs = Math.min(MAX_CLIP_SECONDS, Math.max(0.1, Number(seconds) || 4));
+    stopPreview();
+    stopDeck();
+    const c = { cancelled: false, ctx: null, start: null, seconds: secs };
+    clip = c;
+    emit();
+    try {
+      const ctx = await engine.resume();
+      if (c.cancelled || !mic) return null;
+      const sr = ctx.sampleRate;
+      c.ctx = ctx;
+      c.start = ctx.currentTime + MIN_LEAD;
+      const from = Math.round(c.start * sr);
+      const data = await mic.capture.record(from, from + Math.round(secs * sr));
+      if (c.cancelled || !data) return null;
+      return { samples: data, sampleRate: sr };
+    } finally {
+      if (clip === c) { clip = null; emit(); }
+    }
+  }
+
+  function cancelClip() {
+    const c = clip;
+    if (!c) return;
+    c.cancelled = true;
+    clip = null;
+    mic?.capture.cancel();
+    emit();
+  }
+
+  /** { elapsed, seconds } while captureClip() runs, else null. */
+  function getClipProgress() {
+    const c = clip;
+    if (!c) return null;
+    const elapsed = c.start === null ? 0 : Math.max(0, c.ctx.currentTime - c.start);
+    return { elapsed: Math.min(c.seconds, elapsed), seconds: c.seconds };
+  }
+
   // user stopped the beat: drop the take (the post-roll alone doesn't matter).
   // Over the remix the deck is the backing; the beat is only an extra.
   const offState = engine.onStateChange(({ isPlaying }) => {
@@ -578,7 +634,7 @@ export function createBooth(engine, opts = {}) {
 
   function setBacking(kind) {
     if (kind !== 'beat' && kind !== 'remix') throw new Error(`Unknown backing: ${kind}`);
-    if (rec) throw new Error('busy');
+    if (rec || clip) throw new Error('busy');
     if (kind === 'remix') remixSnapshot();
     if (kind !== backing) { backing = kind; emit(); }
     return backing;
@@ -640,7 +696,7 @@ export function createBooth(engine, opts = {}) {
    * compensation). Uses the current device latency estimate.
    */
   function importTake(samples, { bpm, bars: n = bars, sampleRate } = {}) {
-    if (rec) throw new Error('busy');
+    if (rec || clip) throw new Error('busy');
     if (takes.length >= MAX_TAKES) throw new Error('too-many-takes');
     const snap = backing === 'remix' ? remixSnapshot() : null;
     const tempo = bpm ?? (snap ? snap.bpm : engine.clock.bpm);
@@ -663,11 +719,17 @@ export function createBooth(engine, opts = {}) {
     return metaOf(take);
   }
 
+  /** Dry, latency-compensated copy of a take: { samples (mono), sampleRate, name }. */
+  function getTakeAudio(id) {
+    const take = requireTake(id);
+    return { samples: alignedSamples(take, latencyOf(take)), sampleRate: take.sampleRate, name: take.meta.name };
+  }
+
   // ---- preview ----
 
   async function playTake(id, { withBeat = true } = {}) {
     const take = requireTake(id);
-    if (rec) throw new Error('busy');
+    if (rec || clip) throw new Error('busy');
     stopPreview();
     const overRemix = withBeat && !!take.backing;
     if (withBeat && !overRemix) stopDeck();
@@ -922,6 +984,11 @@ export function createBooth(engine, opts = {}) {
     cancel,
     get state() { return state(); },
     getRecordProgress,
+    captureClip,
+    cancelClip,
+    getClipProgress,
+    /** true while captureClip() runs */
+    get capturingClip() { return !!clip; },
 
     get takes() { return takes.map(metaOf); },
     /** true when MAX_TAKES are kept and record() would reject 'too-many-takes' */
@@ -930,6 +997,7 @@ export function createBooth(engine, opts = {}) {
     selectTake,
     deleteTake,
     importTake,
+    getTakeAudio,
     playTake,
     stopPreview,
     get previewTakeId() { return preview ? preview.id : null; },
