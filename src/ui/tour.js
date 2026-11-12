@@ -6,6 +6,7 @@ export const TOUR_STEPS = [
   { anchor: 'play', title: 'Press Play', text: 'Play starts the loop and Stop ends it. The Space bar works too.' },
   { anchor: 'presets', title: 'Try a preset', text: 'Not sure where to start? Load a ready-made groove and change it to make it yours.' },
   { anchor: 'booth', title: 'Rap over it', text: 'When the beat feels right, open BOOTH to record yourself over it.' },
+  { anchor: 'remix', title: 'Remix a song', text: 'Open REMIX to load your own song, make a slowed + reverb version and rap over that instead.' },
 ];
 
 /** anchors: { [name]: HTMLElement }. onEnd runs when the tour finishes or is skipped. */

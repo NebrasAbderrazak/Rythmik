@@ -1,7 +1,9 @@
 import { MIN_BPM, MAX_BPM } from '../audio/engine.js';
 import { PRESETS } from '../audio/presets.js';
+import { createRemix } from '../audio/remix.js';
 import { mountBeat } from './beat.js';
 import { mountBooth } from './booth.js';
+import { mountRemix } from './remix.js';
 import { mountGuide } from './guide.js';
 import { createTour } from './tour.js';
 import { createStatus } from './status.js';
@@ -11,13 +13,14 @@ import { loadAdvanced, saveAdvanced, hasToured, markToured } from './settings.js
 import { getDefaultStorage, loadSavedPattern, createAutosave } from './persistence.js';
 import { el, led, text, isTyping } from './dom.js';
 
-const MODE_HELP = { beat: 'modeBeat', booth: 'modeBooth' };
+const MODE_HELP = { beat: 'modeBeat', booth: 'modeBooth', remix: 'modeRemix' };
 // Space only toggles playback when focus is not on something Space already operates.
 const SPACE_OWNERS = 'button, a[href], select, input[type=radio], input[type=checkbox], [role=switch], [role=button], [role=slider], .rk-tour';
 
 const VIEW_INFO = {
   beat: { title: 'Beat', intro: 'Build a one-bar loop: tap pads, press Play, change the tempo.' },
   booth: { title: 'Booth', intro: 'Record yourself over the beat in five steps.' },
+  remix: { title: 'Remix', intro: 'Load your own song, slow it down or speed it up, add space, then rap over it in BOOTH.' },
   guide: { title: 'Guide', intro: 'Short, plain explanations of every control, plus a few how-tos.' },
 };
 
@@ -26,6 +29,7 @@ export function mountApp(root, engine) {
   let advanced = loadAdvanced(storage);
   let route = null;
   let boothLocked = false;
+  let remixTake = false; // a take over the remix: the transport key cancels it
 
   // pattern lifecycle (before any view renders)
   engine.setPattern(loadSavedPattern(storage) ?? PRESETS.afroBass.pattern);
@@ -96,6 +100,9 @@ export function mountApp(root, engine) {
     el('span', { 'aria-hidden': 'true', text: 'REC' }),
     el('span', { class: 'rk-visually-hidden', text: 'Recording a take. Go to Booth.' }),
   ]);
+  // While the song plays outside REMIX it would otherwise be invisible.
+  const stopSongBtn = el('button', { type: 'button', class: 'rk-key rk-key--led' }, [led('is-on'), el('span', { text: 'Stop song' })]);
+  const stopSong = el('span', { class: 'rk-pair rk-stopsong', hidden: true }, [stopSongBtn, helpTip('remixDeck')]);
   const transport = el('section', { class: 'rk-transport', 'aria-label': 'Transport' }, [
     el('div', { class: 'rk-transport__play' }, [playBtn, helpTip('play')]),
     el('div', { class: 'rk-tempo' }, [
@@ -106,6 +113,7 @@ export function mountApp(root, engine) {
       ]),
       lockMark,
     ]),
+    stopSong,
     recLink,
   ]);
 
@@ -123,13 +131,23 @@ export function mountApp(root, engine) {
     ]);
   }
 
+  // One deck for the whole app: REMIX plays it, the booth records over it.
+  const remix = createRemix(engine);
   const beat = mountBeat(engine, { status, loadWithUndo, afterAudio: renderAudioNote });
+  const remixView = mountRemix(remix, { storage });
   const boothView = mountBooth(engine, {
+    remix,
     onLockChange: setBoothLock,
     isActive: () => route === 'booth',
   });
   const tour = createTour({
-    anchors: { pads: beat.anchors.pads, play: playBtn, presets: beat.anchors.presets, booth: modeLinks.booth },
+    anchors: {
+      pads: beat.anchors.pads,
+      play: playBtn,
+      presets: beat.anchors.presets,
+      booth: modeLinks.booth,
+      remix: modeLinks.remix,
+    },
   });
   const guide = mountGuide({
     onReplayTour: () => {
@@ -140,6 +158,7 @@ export function mountApp(root, engine) {
   const views = {
     beat: viewShell('beat', beat.el),
     booth: viewShell('booth', boothView.el),
+    remix: viewShell('remix', remixView.el),
     guide: viewShell('guide', guide),
   };
 
@@ -184,8 +203,10 @@ export function mountApp(root, engine) {
     else guideLink.removeAttribute('aria-current');
     document.title = `Rythmik | ${VIEW_INFO[next].title}`;
     renderRec();
+    renderDeck();
     beat.setActive(next === 'beat');
     boothView.setActive();
+    remixView.setActive(next === 'remix');
     if (focus) views[next].querySelector('.rk-view__title')?.focus();
     maybeStartTour();
   }
@@ -222,17 +243,35 @@ export function mountApp(root, engine) {
 
   // During a take: tempo, pattern loads and Play/Stop are locked (the take's BPM is
   // fixed and stopping drops it). Pads, notes, swing and mixer stay live.
+  // Over the remix, Play/Stop stays usable as Stop: it cancels the take.
   function setBoothLock(on) {
     boothLocked = on;
-    for (const c of [playBtn, bpmNumber, bpmRange]) c.disabled = on;
+    remixTake = on && boothView.backing === 'remix';
+    for (const c of [bpmNumber, bpmRange]) c.disabled = on;
+    playBtn.disabled = on && !remixTake;
     lockMark.hidden = !on;
     beat.setLocked(on);
+    remixView.setLocked(on);
+    renderPlaying(engine.isPlaying);
     renderRec();
+    renderDeck();
   }
 
   function renderRec() {
     recLink.hidden = !(boothLocked && route !== 'booth');
   }
+
+  function renderDeck() {
+    const playing = !!remix.isPlaying;
+    modeLinks.remix.querySelector('.rk-led').classList.toggle('is-on', playing);
+    stopSong.hidden = !(playing && route !== 'remix' && !boothLocked);
+  }
+  remix.onChange(renderDeck);
+  stopSongBtn.addEventListener('click', () => {
+    remix.stop();
+    renderDeck();
+    playBtn.focus();
+  });
 
   // transport rendering
   function renderBpm(bpm) {
@@ -244,8 +283,9 @@ export function mountApp(root, engine) {
   }
 
   function renderPlaying(isPlaying) {
-    playLabel.textContent = isPlaying ? 'Stop' : 'Play';
-    playBtn.dataset.playing = isPlaying ? 'true' : 'false';
+    const lit = isPlaying || remixTake;
+    playLabel.textContent = remixTake ? 'Cancel take' : isPlaying ? 'Stop' : 'Play';
+    playBtn.dataset.playing = lit ? 'true' : 'false';
     beat.setPlaying(isPlaying);
   }
 
@@ -279,6 +319,7 @@ export function mountApp(root, engine) {
     if (!e.repeat) ensureAudio();
   });
 
+  // Space lands here too; during any take it does nothing, so a stray press cannot drop the take.
   function togglePlay() {
     if (boothLocked) return;
     if (engine.isPlaying) {
@@ -299,7 +340,10 @@ export function mountApp(root, engine) {
     }
     renderPlaying(engine.isPlaying);
   }
-  playBtn.addEventListener('click', togglePlay);
+  playBtn.addEventListener('click', () => {
+    if (remixTake) boothView.cancel();
+    else togglePlay();
+  });
 
   bpmRange.addEventListener('input', () => {
     engine.setBpm(Number(bpmRange.value));
@@ -342,6 +386,21 @@ export function mountApp(root, engine) {
     if (!e.repeat) togglePlay();
   });
 
+  // A file dropped outside a drop target would make the browser open it and lose the takes.
+  // In REMIX a dropped audio file anywhere loads into the deck.
+  window.addEventListener('dragover', (e) => e.preventDefault());
+  window.addEventListener('drop', (e) => {
+    e.preventDefault();
+    const file = e.dataTransfer?.files?.[0];
+    if (file && route === 'remix') remixView.dropFile(file);
+  });
+
+  // Esc stops the song in REMIX (the booth handles Esc first while a take or preview runs).
+  document.addEventListener('keydown', (e) => {
+    if (e.key !== 'Escape' || e.defaultPrevented || route !== 'remix') return;
+    if (remixView.stop()) e.preventDefault();
+  });
+
   // autosave
   const autosave = createAutosave(storage, { delay: 300 });
   engine.onPatternChange((p) => {
@@ -359,6 +418,7 @@ export function mountApp(root, engine) {
   applyRoute(parseRoute(location.hash));
   renderBpm(engine.getPattern().bpm);
   renderPlaying(engine.isPlaying);
+  renderDeck();
   renderAudioNote();
 
 }

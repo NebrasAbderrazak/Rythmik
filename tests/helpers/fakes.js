@@ -1,4 +1,4 @@
-// Stand-ins for the engine and booth so the UI can mount without Web Audio.
+// Stand-ins for the engine, booth and remix deck so the UI can mount without Web Audio.
 import { vi } from 'vitest';
 import { normalizePattern, emptyPattern } from '../../src/audio/pattern.js';
 import { VOICE_PRESETS } from '../../src/audio/voice.js';
@@ -93,6 +93,13 @@ export function fakeBooth() {
     lastFallback: false,
     listeners: [],
     voiceBusy: false,
+    backing: 'beat',
+    setBacking: vi.fn((kind) => {
+      if (booth.state !== 'idle') throw new Error('busy');
+      booth.backing = kind;
+      booth.emit();
+      return kind;
+    }),
     voiceState: { ...VOICE_PRESETS.clean.settings, key: 'A', scale: 'minor' },
     get voice() {
       return { ...booth.voiceState };
@@ -146,4 +153,98 @@ export function pressSpace(target) {
   const e = new KeyboardEvent('keydown', { key: ' ', code: 'Space', bubbles: true, cancelable: true });
   target.dispatchEvent(e);
   return e;
+}
+
+// Like the real deck, every setter is ignored while `locked` (the booth records over it).
+export function fakeRemix() {
+  const listeners = [];
+  const remix = {
+    locked: false,
+    loaded: false,
+    info: null,
+    isPlaying: false,
+    bpmBusy: false,
+    stretchBusy: false,
+    sourceBpm: null,
+    bpmConfidence: 0,
+    loop: { start: 0, end: 0, enabled: true },
+    settings: { speed: 1, keepPitch: false, reverb: 0, muffle: 0, bass: 0, volume: 0.8, beatSync: false },
+    get effectiveBpm() {
+      return remix.sourceBpm == null ? null : Math.round(remix.sourceBpm * remix.settings.speed * 10) / 10;
+    },
+    load: vi.fn(async (file, { name } = {}) => {
+      if (remix.locked) throw new Error('busy');
+      remix.loaded = true;
+      remix.info = { name: name ?? file?.name ?? 'Untitled', duration: 120, sampleRate: 48000, channels: 2 };
+      remix.loop = { start: 0, end: 120, enabled: true };
+      remix.emit();
+      return remix.info;
+    }),
+    unload: vi.fn(() => {
+      if (remix.locked) return;
+      remix.stop();
+      remix.loaded = false;
+      remix.info = null;
+      remix.sourceBpm = null;
+      remix.emit();
+    }),
+    getPeaks: (n) => ({ min: new Float32Array(n), max: new Float32Array(n) }),
+    play: vi.fn(() => {
+      remix.isPlaying = true;
+      remix.emit();
+      return Promise.resolve();
+    }),
+    stop: vi.fn(() => {
+      if (!remix.isPlaying) return;
+      remix.isPlaying = false;
+      remix.emit();
+    }),
+    getPosition: () => (remix.isPlaying ? remix.loop.start : null),
+    setLoop: vi.fn((start, end) => {
+      if (remix.locked) return { ...remix.loop };
+      remix.loop = { ...remix.loop, start, end };
+      remix.emit();
+      return { ...remix.loop };
+    }),
+    setLoopEnabled: vi.fn((on) => {
+      if (remix.locked) return remix.loop.enabled;
+      remix.loop = { ...remix.loop, enabled: !!on };
+      remix.emit();
+      return !!on;
+    }),
+    update(partial) {
+      if (remix.locked) return;
+      remix.settings = { ...remix.settings, ...partial };
+      if (remix.settings.beatSync && remix.sourceBpm == null) remix.settings.beatSync = false;
+      remix.emit();
+    },
+    setSpeed: vi.fn((x) => remix.update({ speed: x })),
+    setKeepPitch: vi.fn((on) => remix.update({ keepPitch: !!on })),
+    setFx: vi.fn((name, v) => remix.update({ [name]: v })),
+    applyPreset: vi.fn((id) => {
+      const s = {
+        original: { speed: 1, keepPitch: false, reverb: 0, muffle: 0, bass: 0 },
+        slowedReverb: { speed: 0.85, keepPitch: false, reverb: 0.5, muffle: 0.2, bass: 0.15 },
+      }[id];
+      remix.update(s);
+    }),
+    setSettings: vi.fn((partial) => remix.update(partial)),
+    setSourceBpm: vi.fn((n) => {
+      if (remix.locked) return remix.sourceBpm;
+      remix.sourceBpm = n;
+      remix.emit();
+      return n;
+    }),
+    setBeatSync: vi.fn((on) => remix.update({ beatSync: !!on })),
+    render: vi.fn(() => Promise.resolve(null)),
+    onChange(cb) {
+      listeners.push(cb);
+      return () => {};
+    },
+    emit() {
+      listeners.forEach((cb) => cb());
+    },
+    dispose() {},
+  };
+  return remix;
 }

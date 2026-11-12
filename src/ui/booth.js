@@ -3,6 +3,7 @@ import { encodeWav } from '../audio/wav.js';
 import { VOICE_PRESETS, KEYS, SCALES } from '../audio/voice.js';
 import { createKnob } from './knob.js';
 import { helpLabel, helpTip } from './helptip.js';
+import { formatBpm } from './remix.js';
 import { el, silk, led, isTyping, downloadBlob, setUnavailable, isUnavailable } from './dom.js';
 
 const BAR_OPTIONS = [2, 4, 8, 16];
@@ -25,6 +26,11 @@ const VOICE_ORDER = ['clean', 'robot', 'tuned', 'radio', 'hall', 'lofi'];
 const VOICE_HELP = { clean: 'voiceClean', robot: 'voiceRobot', tuned: 'voiceTuned', radio: 'voiceRadio', hall: 'voiceHall', lofi: 'voiceLofi' };
 const PREPARE_DELAY = 250; // ms after the last voice change before tuning starts
 const SILENT_MS = 3000;
+const BACKING_ERRORS = {
+  busy: 'Wait until the take is finished.',
+  'no-remix': 'Load a song in REMIX first.',
+  'no-bpm': 'The song needs a tempo first. Tap it or type it in REMIX.',
+};
 
 function loadInput() {
   try {
@@ -115,12 +121,19 @@ function step(n, title, id, tip = null) {
   return { head, led: stateLed };
 }
 
+/** What a take was recorded over, for the takes list. */
+export function backingText(take) {
+  const b = take?.backing;
+  return b?.type === 'remix' ? `over ${b.name || 'the song'}` : 'over the beat';
+}
+
 /**
  * The BOOTH view. onLockChange(locked) fires when a take starts or ends.
  * isActive() tells whether the view is on screen (the R shortcut only works there).
+ * remix (optional): the shared deck, so takes can be recorded over the song.
  */
-export function mountBooth(engine, { onLockChange = () => {}, isActive = () => true } = {}) {
-  const booth = createBooth(engine);
+export function mountBooth(engine, { remix = null, onLockChange = () => {}, isActive = () => true } = {}) {
+  const booth = createBooth(engine, { remix });
   let locked = false;
 
   let bars = BAR_OPTIONS.includes(booth.bars) ? booth.bars : 4;
@@ -220,11 +233,33 @@ export function mountBooth(engine, { onLockChange = () => {}, isActive = () => t
     el('p', { class: 'rk-hint', text: 'Voice late on playback? Move Offset right. Early? Move it left.' }),
   ]);
 
+  const overBeat = el('input', { type: 'radio', id: 'rk-over-beat', name: 'rk-booth-backing', value: 'beat', class: 'rk-radio', checked: true });
+  const overRemix = el('input', {
+    type: 'radio',
+    id: 'rk-over-remix',
+    name: 'rk-booth-backing',
+    value: 'remix',
+    class: 'rk-radio',
+    'aria-describedby': 'rk-over-why',
+  });
+  const backingWhy = el('p', { class: 'rk-hint', id: 'rk-over-why' });
+  const backingChoice = remix
+    ? el('fieldset', { class: 'rk-choice', 'aria-labelledby': 'rk-over-label' }, [
+      helpLabel('recordOver', { id: 'rk-over-label' }),
+      el('span', { class: 'rk-choice__opts' }, [
+        el('label', { class: 'rk-choice__opt', for: 'rk-over-beat' }, [overBeat, el('span', { text: 'Beat' })]),
+        el('label', { class: 'rk-choice__opt', for: 'rk-over-remix' }, [overRemix, el('span', { text: 'Remix' })]),
+      ]),
+      backingWhy,
+    ])
+    : null;
+
   const recStep = step(2, 'Record', 'rk-step-rec');
   const offsetNote = el('p', { class: 'rk-note-line rk-beginner', hidden: true });
   const recPanel = el('section', { class: 'rk-step', 'aria-labelledby': 'rk-step-rec' }, [
     recStep.head,
     recordEmpty,
+    backingChoice,
     el('div', { class: 'rk-field' }, [helpLabel('takeBars', { forId: 'rk-booth-bars' }), barsSelect]),
     el('div', { class: 'rk-btnrow' }, [countInBtn, helpTip('countIn')]),
     el('div', { class: 'rk-btnrow' }, [recordBtn, helpTip('record'), progress]),
@@ -354,7 +389,8 @@ export function mountBooth(engine, { onLockChange = () => {}, isActive = () => t
     const info = el('span', { class: 'rk-take__info' });
     const tag = el('span', { class: 'rk-take__tag', text: 'In mix' });
     const label = el('label', { class: 'rk-take__label', for: radioId }, [radio, name, info, tag]);
-    const playBtn = el('button', { type: 'button', class: 'rk-key rk-key--led', 'aria-label': `Play ${take.name} with beat` }, [
+    const withWhat = take.backing?.type === 'remix' ? 'song' : 'beat';
+    const playBtn = el('button', { type: 'button', class: 'rk-key rk-key--led', 'aria-label': `Play ${take.name} with ${withWhat}` }, [
       led(),
       el('span', { text: 'Play' }),
     ]);
@@ -385,7 +421,7 @@ export function mountBooth(engine, { onLockChange = () => {}, isActive = () => t
       // Move only misplaced rows; moving a node blurs it.
       const at = takeList.children[i] || null;
       if (at !== row.li) takeList.insertBefore(row.li, at);
-      row.info.textContent = `${take.bars} bars, ${(take.duration || 0).toFixed(1)} s, peak ${formatPeak(take.peak)}`;
+      row.info.textContent = `${take.bars} bars at ${formatBpm(take.bpm)} BPM ${backingText(take)}, ${(take.duration || 0).toFixed(1)} s, peak ${formatPeak(take.peak)}`;
       const selected = take.id === booth.selectedTakeId;
       row.radio.checked = selected;
       row.li.classList.toggle('is-selected', selected);
@@ -439,6 +475,7 @@ export function mountBooth(engine, { onLockChange = () => {}, isActive = () => t
 
     barsSelect.disabled = !idle;
     countInBtn.disabled = !idle;
+    renderBacking(idle);
     countInBtn.setAttribute('aria-pressed', String(countIn));
 
     recordBtn.disabled = !micOpen && idle;
@@ -472,6 +509,34 @@ export function mountBooth(engine, { onLockChange = () => {}, isActive = () => t
     renderVoice();
 
     updateLoop();
+  }
+
+  function renderBacking(idle) {
+    if (!remix) return;
+    const over = booth.backing === 'remix' ? 'remix' : 'beat';
+    const ready = !!remix.loaded && remix.sourceBpm != null;
+    overBeat.checked = over === 'beat';
+    overRemix.checked = over === 'remix';
+    overBeat.disabled = !idle;
+    overRemix.disabled = !idle || (!ready && over !== 'remix');
+    let why = '';
+    if (!remix.loaded) why = 'To rap over your own song, load it in REMIX first.';
+    else if (remix.sourceBpm == null) why = remix.bpmBusy ? 'Finding the song tempo…' : 'The song needs a tempo first. Tap it or type it in REMIX.';
+    else if (over === 'remix') {
+      const name = remix.info?.name || 'the song';
+      why = `Takes start at the loop start of ${name}, at ${formatBpm(remix.effectiveBpm)} BPM.`;
+    }
+    if (backingWhy.textContent !== why) backingWhy.textContent = why;
+    backingWhy.hidden = !why;
+  }
+
+  function changeBacking(kind) {
+    try {
+      booth.setBacking(kind);
+    } catch (err) {
+      setMicMsg(BACKING_ERRORS[err?.message] || 'Could not switch what you record over.', true);
+    }
+    render();
   }
 
   function renderVoice() {
@@ -778,6 +843,8 @@ export function mountBooth(engine, { onLockChange = () => {}, isActive = () => t
     render();
   });
   inputSelect.addEventListener('change', changeInput);
+  overBeat.addEventListener('change', () => overBeat.checked && changeBacking('beat'));
+  overRemix.addEventListener('change', () => overRemix.checked && changeBacking('remix'));
   mixBtn.addEventListener('click', () => {
     if (!isUnavailable(mixBtn)) exportTake('mix');
   });
@@ -823,6 +890,7 @@ export function mountBooth(engine, { onLockChange = () => {}, isActive = () => t
   if (saved) booth.setInputDevice(saved).catch(() => {}); // mic is closed: only remembered
   const unsubscribe = booth.onChange(render);
   const unsubDevices = booth.onDevicesChange(onDevices);
+  const unsubRemix = remix?.onChange(render);
   render();
   refreshInputs();
 
@@ -834,11 +902,17 @@ export function mountBooth(engine, { onLockChange = () => {}, isActive = () => t
     get recording() {
       return booth.state !== 'idle';
     },
+    /** 'beat' | 'remix': what takes are recorded over */
+    get backing() {
+      return booth.backing === 'remix' ? 'remix' : 'beat';
+    },
+    cancel: cancelRecording,
     destroy() {
       document.removeEventListener('keydown', onKey);
       clearTimeout(prepareTimer);
       unsubscribe?.();
       unsubDevices?.();
+      unsubRemix?.();
       if (rafId) cancelAnimationFrame(rafId);
       booth.cancel();
       booth.dispose();

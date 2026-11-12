@@ -11,6 +11,11 @@ export const HELP = {
     sub: 'record your voice',
     text: 'Opens the recording booth, where you rap over your beat and export the song; the beat keeps playing while you switch.',
   },
+  modeRemix: {
+    term: 'Remix',
+    sub: 'rework a song',
+    text: 'Opens the remix deck, where you load your own song, slow it down or speed it up, add space and rap over it.',
+  },
   undo: {
     term: 'Undo',
     sub: 'bring back your beat',
@@ -28,7 +33,7 @@ export const HELP = {
   advanced: {
     term: 'Advanced',
     sub: 'all controls',
-    text: 'Shows the extra controls for fine-tuning: swing, volumes, mute, solo, 808 notes, effect details, voice tuning and latency.',
+    text: 'Shows the extra controls for fine-tuning: swing, volumes, mute, solo, 808 notes, effect details, voice tuning, latency and remix speed.',
   },
   presets: {
     term: 'Presets',
@@ -270,6 +275,116 @@ export const HELP = {
     sub: 'delay',
     text: 'Adds a soft echo to your whole voice that repeats in time with the beat.',
   },
+  recordOver: {
+    term: 'Record over',
+    sub: 'beat or song',
+    text: 'Chooses what you rap over: your beat, or the song loaded in REMIX starting at its loop start.',
+  },
+  remixLoad: {
+    term: 'Load a song',
+    sub: 'your audio file',
+    text: 'Opens an audio file from this computer, such as an MP3 or WAV; it is never uploaded anywhere.',
+  },
+  remixRemove: {
+    term: 'Remove',
+    sub: 'unload the song',
+    text: 'Takes the song out of the deck; your remix settings stay for the next song.',
+  },
+  remixDeck: {
+    term: 'Play song',
+    sub: 'the deck',
+    text: 'Plays or stops your song; it is separate from the beat, so both can play at once.',
+  },
+  remixWave: {
+    term: 'Waveform',
+    sub: 'click or drag',
+    text: 'Click to play from that point, drag across it to mark a loop, or drag the two handles to move the loop edges.',
+  },
+  remixLoop: {
+    term: 'Loop',
+    sub: 'repeat a part',
+    text: 'When on, the song repeats the marked part over and over; when off, it plays to the end.',
+  },
+  remixSlowedReverb: {
+    term: 'Slowed + reverb',
+    sub: 'one click',
+    text: 'Slows the song down, adds a big room and softens the highs for the classic dreamy sound.',
+  },
+  remixOriginal: {
+    term: 'Original',
+    sub: 'reset',
+    text: 'Puts speed and effects back to how the song sounds as loaded.',
+  },
+  remixSpeed: {
+    term: 'Speed',
+    sub: 'slower or faster',
+    text: 'Plays the song slower or faster, and like a record the pitch goes down or up with it.',
+  },
+  remixSpeedFine: {
+    term: 'Fine speed',
+    sub: '0.50x to 1.50x',
+    text: 'Sets any speed between half and one and a half times the original.',
+  },
+  remixKeepPitch: {
+    term: 'Keep pitch',
+    sub: 'tempo only',
+    text: 'Changes only the tempo and keeps the original pitch, which takes a few seconds to prepare after each speed change.',
+  },
+  remixSpace: {
+    term: 'Space',
+    sub: 'reverb',
+    text: 'Puts the song in a big room: more Space sounds wider and more distant.',
+  },
+  remixMuffle: {
+    term: 'Muffle',
+    sub: 'next room',
+    text: 'Cuts the highs so the song sounds like it plays underwater or through a wall.',
+  },
+  remixBass: {
+    term: 'Bass',
+    sub: 'low boost',
+    text: 'Turns up the low end of the song.',
+  },
+  remixVolume: {
+    term: 'Volume',
+    sub: 'song level',
+    text: 'Sets how loud the song is compared to the beat and your voice.',
+  },
+  remixSongBpm: {
+    term: 'Song tempo',
+    sub: 'BPM',
+    text: 'The tempo found in your song at normal speed, and next to it the tempo at the speed you picked.',
+  },
+  remixTap: {
+    term: 'Tap',
+    sub: 'tap tempo',
+    text: 'Tap this key along with the song while it plays to set its tempo when it was not found or is wrong.',
+  },
+  remixManualBpm: {
+    term: 'Song BPM',
+    sub: 'type it',
+    text: 'Type the tempo of the song at normal speed if you know it.',
+  },
+  remixHalfDouble: {
+    term: 'x2 and /2',
+    sub: 'fix the tempo',
+    text: 'Doubles or halves the song tempo when it was found at twice or half the real speed.',
+  },
+  remixBeatSync: {
+    term: 'Beat plays along',
+    sub: 'beat sync',
+    text: 'Plays your beat in time with the song at the song tempo, starting on the loop start, whenever the song plays.',
+  },
+  remixExport: {
+    term: 'Export remix',
+    sub: 'WAV file',
+    text: 'Saves the song as you hear it, with speed and effects, as a WAV file; the beat is included when Beat plays along is on.',
+  },
+  remixExportRange: {
+    term: 'Length',
+    sub: 'loop or whole song',
+    text: 'Choose whether the export holds only the marked loop or the whole song.',
+  },
 };
 
 export const HELP_KEYS = Object.keys(HELP);
@@ -298,11 +413,21 @@ export const GUIDE_SECTIONS = [
     keys: ['effects', 'fxSpace', 'fxEcho', 'voice', 'voiceClean', 'voiceRobot', 'voiceTuned', 'voiceRadio', 'voiceHall', 'voiceLofi'],
   },
   {
+    id: 'remix',
+    title: 'Remixing a song',
+    keys: [
+      'modeRemix', 'remixLoad', 'remixRemove', 'remixDeck', 'remixWave', 'remixLoop', 'remixSlowedReverb', 'remixOriginal',
+      'remixSpeed', 'remixSpace', 'remixMuffle', 'remixBass', 'remixVolume', 'remixSongBpm', 'remixTap', 'remixHalfDouble',
+      'remixBeatSync', 'remixExport', 'remixExportRange', 'recordOver',
+    ],
+  },
+  {
     id: 'advanced',
     title: 'Advanced controls',
     keys: [
       'advanced', 'swing', 'master', 'volume', 'mute', 'solo', 'bassNotes', 'fxEchoTime', 'fxFilter', 'fxDrive', 'fxSends',
       'voiceKey', 'voiceScale', 'voiceTune', 'voiceRetune', 'voiceReverb', 'voiceEcho', 'latency', 'latencyOffset',
+      'remixSpeedFine', 'remixKeepPitch', 'remixManualBpm',
     ],
   },
 ];
@@ -344,6 +469,17 @@ export const GUIDE_RECIPES = [
       'Open step 4, Voice, and press Robot.',
       'Wait until "Tuning your take" is gone, then press Play on your take.',
       'Happy with it? Export the mix in step 5.',
+    ],
+  },
+  {
+    title: 'Make a slowed + reverb version and rap over it',
+    steps: [
+      'Go to REMIX and press Load a song, or drop an audio file on the deck.',
+      'Press Slowed + reverb, then Play song to hear it.',
+      'Drag across the waveform to loop the part you want to rap over.',
+      'Check Song tempo shows a number; if not, press Tap along with the song.',
+      'In BOOTH, set Record over to Remix and record your takes.',
+      'Export the mix in step 5, or Export remix in REMIX for the song alone.',
     ],
   },
 ];

@@ -29,6 +29,7 @@ describe('parseRoute', () => {
     expect(parseRoute('#beat')).toBe('beat');
     expect(parseRoute('#booth')).toBe('booth');
     expect(parseRoute('#guide')).toBe('guide');
+    expect(parseRoute('#remix')).toBe('remix');
     expect(parseRoute('#/booth')).toBe('booth');
     expect(parseRoute('#BOOTH')).toBe('booth');
     expect(parseRoute('#booth?x=1')).toBe('booth');
@@ -110,6 +111,10 @@ describe('help dictionary', () => {
     'effects', 'fxSpace', 'fxEcho', 'fxEchoTime', 'fxFilter', 'fxDrive', 'fxSends',
     'voice', 'voiceClean', 'voiceRobot', 'voiceTuned', 'voiceRadio', 'voiceHall', 'voiceLofi',
     'voiceKey', 'voiceScale', 'voiceTune', 'voiceRetune', 'voiceReverb', 'voiceEcho',
+    'modeRemix', 'recordOver', 'remixLoad', 'remixRemove', 'remixDeck', 'remixWave', 'remixLoop',
+    'remixSlowedReverb', 'remixOriginal', 'remixSpeed', 'remixSpeedFine', 'remixKeepPitch',
+    'remixSpace', 'remixMuffle', 'remixBass', 'remixVolume', 'remixSongBpm', 'remixTap',
+    'remixManualBpm', 'remixHalfDouble', 'remixBeatSync', 'remixExport', 'remixExportRange',
   ];
 
   it('every control id has help text and a ? in the UI', () => {

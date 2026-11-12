@@ -1,5 +1,5 @@
-// Hash routes: #beat (default), #booth, #guide.
-export const MODES = ['beat', 'booth'];
+// Hash routes: #beat (default), #booth, #remix, #guide.
+export const MODES = ['beat', 'booth', 'remix'];
 export const ROUTES = [...MODES, 'guide'];
 export const DEFAULT_ROUTE = 'beat';
 
