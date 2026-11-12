@@ -1,0 +1,134 @@
+/* SAMPLES panel: sits under the BEAT grid, uses the tokens from style.css */
+.rk-smp { gap: 18px; scroll-margin-top: 96px; }
+.rk-smp:focus { outline: none; }
+.rk-smp:focus-visible { outline: 2px solid var(--accent); outline-offset: 4px; }
+
+.rk-smp__intro { margin: 0; font-size: 0.9rem; color: var(--text); }
+.rk-smp__get { display: grid; gap: 12px; min-width: 0; }
+.rk-smp__getkeys {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 230px), 1fr));
+  gap: 12px;
+}
+.rk-smp__getcell {
+  display: grid;
+  align-content: start;
+  gap: 8px;
+  min-width: 0;
+  padding: 12px;
+  border: 1px dashed var(--line);
+  border-radius: 3px;
+}
+.rk-smp__getcell > .rk-pair { width: 100%; }
+.rk-smp__get-key { flex: 1 1 auto; min-width: 0; }
+.rk-smp__lengths { gap: 6px 8px; }
+.rk-smp__lengths .rk-key { min-width: 52px; padding: 0 10px; }
+.rk-smp__takes { padding: 10px; border: 1px solid var(--line); border-radius: 3px; background: rgba(0, 0, 0, 0.12); }
+.rk-smp__takelen { font-weight: 500; letter-spacing: 0.04em; text-transform: none; color: var(--text-dim); font-variant-numeric: tabular-nums; }
+
+.rk-smp__editor,
+.rk-smp__samples { display: grid; grid-template-columns: minmax(0, 1fr); gap: 12px; min-width: 0; padding-top: 16px; border-top: 1px solid var(--line); }
+.rk-smp__source { max-width: 100%; }
+.rk-smp__sourcename { min-width: 0; max-width: 16ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rk-smp__wave { height: 120px; }
+.rk-smp__regioninfo { margin: 0; font-size: 0.82rem; font-variant-numeric: tabular-nums; color: var(--text-dim); }
+
+/* slice marks drawn over the waveform, numbered like the keys below it */
+.rk-smp__slicemarks { position: absolute; inset: 0; pointer-events: none; }
+.rk-smp__slicemark {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  padding: 2px 4px;
+  border-left: 1px solid rgba(240, 233, 221, 0.35);
+  font-size: 0.66rem;
+  font-weight: 700;
+  line-height: 1;
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+}
+.rk-smp__slicemark.is-picked { color: var(--accent); border-left-color: var(--accent); background: rgba(126, 217, 87, 0.08); }
+
+.rk-smp__slices { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
+.rk-smp__slicekeys { display: flex; flex-wrap: wrap; gap: 6px; }
+.rk-smp__slice { min-width: 44px; padding: 0; font-size: 0.95rem; font-variant-numeric: tabular-nums; }
+.rk-smp__slice[aria-pressed='true'] { color: var(--accent); border-color: #1f3a12; box-shadow: inset 0 0 0 1px var(--accent-deep), inset 0 2px 4px rgba(0, 0, 0, 0.35); }
+
+.rk-smp__text {
+  flex: 1 1 160px;
+  min-width: 0;
+  max-width: 100%;
+  min-height: 44px;
+  padding: 0 10px;
+  border: 1px solid var(--edge);
+  border-radius: 3px;
+  background: linear-gradient(180deg, #0d0b0a, var(--recess));
+  box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.7), 0 1px 0 rgba(255, 240, 220, 0.06);
+}
+.rk-smp__text::placeholder { color: var(--text-dim); opacity: 1; }
+
+.rk-smp__sampleshead { gap: 6px 14px; }
+.rk-smp__count { font-size: 0.82rem; font-variant-numeric: tabular-nums; color: var(--text-dim); }
+.rk-smp__storage { margin: 0; }
+.rk-smp__legend { gap: 4px 18px; }
+
+.rk-smp__list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 250px), 1fr));
+  gap: 12px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.rk-smp-card {
+  display: grid;
+  align-content: start;
+  gap: 10px;
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid #1a1714;
+  border-radius: 3px;
+  background: rgba(0, 0, 0, 0.12);
+}
+.rk-smp-card__top { display: flex; align-items: center; gap: 12px; min-width: 0; }
+.rk-smp-card__pad {
+  flex: 0 0 64px;
+  width: 64px;
+  height: 64px;
+  display: grid;
+  place-items: start end;
+  padding: 7px;
+}
+.rk-smp-card__pad.is-hit {
+  border-color: #1f3a12;
+  background: radial-gradient(120% 90% at 50% 30%, #c6f5ad 0%, var(--accent) 40%, var(--accent-deep) 100%);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.45), 0 2px 0 #0b0907, 0 0 12px -2px var(--accent-glow);
+}
+.rk-smp-card__title { display: grid; gap: 4px; min-width: 0; }
+.rk-smp-card__name { font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rk-smp-card__info { font-size: 0.8rem; color: var(--text-dim); font-variant-numeric: tabular-nums; }
+.rk-smp-card__tag { display: inline-flex; align-items: center; gap: 6px; font-size: 0.66rem; font-weight: 700; letter-spacing: 0.16em; text-transform: uppercase; }
+.rk-smp-card__knobs { display: flex; flex-wrap: wrap; justify-content: space-around; gap: 10px 20px; }
+.rk-smp-card__adv { display: grid; gap: 10px; padding-top: 10px; border-top: 1px solid var(--line); }
+.rk-smp-card__num { width: 6ch; font-size: 1.1rem; }
+.rk-smp-card__del[data-confirm] { color: var(--text); border-color: var(--edge); }
+.rk-smp-card__why:empty { display: none; }
+
+@media (max-width: 420px) {
+  .rk-smp__getcell { padding: 10px 8px; }
+  .rk-smp__wave { height: 100px; }
+  .rk-smp-card { padding: 10px 8px; }
+}
+
+@media (forced-colors: active) {
+  .rk-smp-card__pad.is-hit, .rk-smp__slice[aria-pressed='true'] { forced-color-adjust: none; background: Highlight; color: HighlightText; }
+}
+
+/* same look as .rk-busy, own class so page-wide lookups of the booth busy line stay unambiguous */
+.rk-smp__busy { display: flex; align-items: center; gap: 8px; margin: 0; font-size: 0.85rem; color: var(--text); min-width: 0; overflow-wrap: anywhere; }
+.rk-smp__busy:empty { display: none; }
+
+/* collapsed by default: one row with the open key */
+.rk-smp__openrow { gap: 6px 14px; }
+.rk-smp__openline { flex: 1 1 200px; }
+.rk-smp__body { display: grid; grid-template-columns: minmax(0, 1fr); gap: 18px; min-width: 0; }

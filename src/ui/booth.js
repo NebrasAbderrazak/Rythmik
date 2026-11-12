@@ -5,6 +5,7 @@ import { createKnob } from './knob.js';
 import { helpLabel, helpTip } from './helptip.js';
 import { formatBpm } from './format.js';
 import { el, silk, led, isTyping, downloadBlob, setUnavailable, isUnavailable } from './dom.js';
+import { revealSampler, samplerErrorText } from './sampler.js';
 
 const BAR_OPTIONS = [2, 4, 8, 16];
 const OFFSET_MIN = -200;
@@ -133,8 +134,9 @@ export function backingText(take) {
  * The BOOTH view. onLockChange(locked) fires when a take starts or ends.
  * isActive() tells whether the view is on screen (the R shortcut only works there).
  * remix (optional): the shared deck, so takes can be recorded over the song.
+ * getSampler(): the sampler, once the app has made one; takes get a "Use as sample" key then.
  */
-export function mountBooth(engine, { remix = null, onLockChange = () => {}, isActive = () => true } = {}) {
+export function mountBooth(engine, { remix = null, onLockChange = () => {}, isActive = () => true, getSampler = () => null } = {}) {
   const booth = createBooth(engine, { remix });
   let locked = false;
 
@@ -276,11 +278,13 @@ export function mountBooth(engine, { remix = null, onLockChange = () => {}, isAc
   // 3 takes
   const takeList = el('ul', { class: 'rk-takes', 'aria-label': 'Takes; the picked take is used in the mix' });
   const noTakes = el('p', { class: 'rk-empty', text: 'Your takes will show up here.' });
+  const takesMsg = el('p', { class: 'rk-msg', role: 'status' });
   const stopBtn = el('button', { type: 'button', class: 'rk-key', disabled: true, 'aria-label': 'Stop take playback', text: 'Stop' });
   const takesStep = step(3, 'Takes', 'rk-step-takes', helpTip('takes'));
   const takeLegend = el('p', { class: 'rk-btnrow rk-takes__legend' }, [
     helpLabel('takePlay', { sub: false }),
     helpLabel('takeDelete', { sub: false }),
+    helpLabel('smpUseTake', { sub: false }),
     el('span', { class: 'rk-hint', text: 'The take marked In mix is the one you export.' }),
   ]);
   const takesPanel = el('section', { class: 'rk-step rk-step--wide', 'aria-labelledby': 'rk-step-takes' }, [
@@ -288,6 +292,7 @@ export function mountBooth(engine, { remix = null, onLockChange = () => {}, isAc
     noTakes,
     takeLegend,
     takeList,
+    takesMsg,
     el('div', { class: 'rk-btnrow' }, [stopBtn, helpTip('previewStop')]),
   ]);
 
@@ -405,11 +410,14 @@ export function mountBooth(engine, { remix = null, onLockChange = () => {}, isAc
     });
     const delBtn = el('button', { type: 'button', class: 'rk-key', 'aria-label': `Delete ${take.name}`, text: 'Delete' });
     delBtn.addEventListener('click', () => deleteTake(take.id));
-    const li = el('li', { class: 'rk-take' }, [label, el('div', { class: 'rk-btnrow' }, [playBtn, delBtn])]);
-    return { li, radio, info, playBtn, delBtn };
+    const useBtn = el('button', { type: 'button', class: 'rk-key', 'aria-label': `Use ${take.name} as sample`, text: 'Use as sample' });
+    useBtn.addEventListener('click', () => useAsSample(take));
+    const li = el('li', { class: 'rk-take' }, [label, el('div', { class: 'rk-btnrow' }, [playBtn, delBtn, useBtn])]);
+    return { li, radio, info, playBtn, delBtn, useBtn };
   }
 
   function renderTakes(takes) {
+    const sampler = currentSampler();
     const ids = new Set(takes.map((t) => t.id));
     for (const [id, row] of takeRows) {
       if (!ids.has(id)) {
@@ -434,10 +442,13 @@ export function mountBooth(engine, { remix = null, onLockChange = () => {}, isAc
       row.playBtn.firstElementChild.classList.toggle('is-on', booth.previewTakeId === take.id);
       setUnavailable(row.playBtn, { hard: recording, soft: busy || tuning });
       row.delBtn.disabled = recording || busy;
+      row.useBtn.hidden = !sampler;
+      row.useBtn.disabled = recording;
     });
     noTakes.hidden = takes.length > 0;
     takeList.hidden = takes.length === 0;
     takeLegend.hidden = takes.length === 0;
+    takeLegend.querySelector('[data-help=smpUseTake]').closest('.rk-label').hidden = !sampler;
   }
 
   // Disabling a focused control drops focus to the page; keep it nearby.
@@ -766,6 +777,28 @@ export function mountBooth(engine, { remix = null, onLockChange = () => {}, isAc
     render();
   }
 
+  function currentSampler() {
+    try {
+      return getSampler?.() || null;
+    } catch {
+      return null;
+    }
+  }
+
+  // Cuts a sound from the take in SAMPLES (BEAT).
+  function useAsSample(take) {
+    const sampler = currentSampler();
+    if (!sampler || booth.state !== 'idle') return;
+    try {
+      sampler.fromTake(take.id);
+    } catch (err) {
+      setMsg(takesMsg, samplerErrorText(err, 'source'), true);
+      return;
+    }
+    setMsg(takesMsg, '');
+    revealSampler();
+  }
+
   function deleteTake(id) {
     const takes = booth.takes || [];
     const idx = takes.findIndex((t) => t.id === id);
@@ -920,6 +953,8 @@ export function mountBooth(engine, { remix = null, onLockChange = () => {}, isAc
 
   return {
     el: view,
+    /** the booth engine, for createSampler(engine, { booth }) */
+    booth,
     setActive() {
       updateLoop();
     },
