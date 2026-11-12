@@ -6,11 +6,13 @@ Make beats in your browser, then rap over them. A step sequencer with a synthesi
 **Beat**
 - 8 synthesized tracks: Kick, Snare, Clap, Closed hat, Open hat, Rim, Shaker, 808 bass
 - 16-step grid, presets (Afro bass, Trap, Boom bap, Empty), tempo 60–180 BPM
+- Effects: Space (reverb) and Echo, plus Filter, Drive and per-track sends
 - Export the beat as WAV, export / import patterns as JSON, autosave in your browser
 
 **Booth**
 - Pick your mic, record over the looping beat with a count-in, keep multiple takes
 - Latency compensation, optional monitoring
+- Voice presets: Clean, Robot and Tuned autotune, Radio, Hall, Lo-fi (key, scale and retune speed in Advanced)
 - Export the full song or the vocal alone as WAV
 
 **For beginners and pros**
@@ -128,7 +130,7 @@ docs/        Engine API reference
 
 ## Roadmap
 1. Beat maker (done)
-2. Rap booth: record vocals over the beat, WAV export (in progress)
-3. Effects, including a robot-autotune voice
+2. Rap booth: record vocals over the beat, WAV export (done)
+3. Effects, including a robot-autotune voice (done)
 4. Remix deck: slow down, add reverb and rap over your own tracks
 5. Polish and ship
