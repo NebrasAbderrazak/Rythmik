@@ -1,8 +1,16 @@
 {
   "name": "rythmik",
   "private": true,
-  "version": "0.1.0",
+  "version": "1.0.0",
+  "description": "Browser beat maker with a rap booth and a remix deck, built on the Web Audio API",
   "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/NebrasAbderrazak/Rythmik.git"
+  },
+  "engines": {
+    "node": ">=22.12"
+  },
   "scripts": {
     "dev": "vite",
     "build": "vite build",
