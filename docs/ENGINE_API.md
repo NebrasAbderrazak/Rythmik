@@ -105,6 +105,7 @@ await booth.renderMix(takeId?)           // AudioBuffer: beat (current pattern) 
                                          // rendered offline for the take's length plus a short tail
 await booth.renderVocal(takeId?)         // AudioBuffer: dry take only, latency-compensated
 encodeWav(audioBuffer, { bitDepth: 16 }) // ArrayBuffer of a PCM WAV file
+await renderBeat(pattern, { bars: 4, tail: 1.5 }) // AudioBuffer: beat only (src/audio/export.js), bars 1|2|4|8|16, master chain + tail
 
 booth.onChange(cb)                       // cb() after any state/take/mic change; returns unsubscribe
 ```
