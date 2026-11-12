@@ -4,16 +4,17 @@
 import { STEPS, secondsPerStep } from './constants.js';
 import { renderPatternOffline } from './offline.js';
 import { createMasterChain } from './sequence.js';
+import { normalizePattern } from './pattern.js';
+import { fxTail } from './fx.js';
+import { createVoiceChain, voiceTail, vocalGain, DEFAULT_VOICE } from './voice.js';
+
+export { vocalGain };
 
 export const PRE_ROLL = 0.25;
 export const POST_ROLL = 0.6;
 export const MIN_LATENCY_MS = -PRE_ROLL * 1000;
 export const MAX_LATENCY_MS = POST_ROLL * 1000;
 export const MIX_TAIL = 1;
-const VOCAL_TARGET_PEAK = 0.8; // into the master bus, before master gain
-const VOCAL_MAX_BOOST = 4; // +12 dB
-const VOCAL_HIGHPASS_HZ = 80;
-
 export const barSeconds = (bpm) => secondsPerStep(bpm) * STEPS;
 
 export function peakOf(data) {
@@ -68,51 +69,63 @@ export function alignedPeak(take, latencyMs) {
   return peakOf(take.raw.subarray(from, Math.min(take.raw.length, from + take.length)));
 }
 
-export function vocalGain(peak) {
-  if (!(peak > 1e-4)) return 1;
-  return Math.min(VOCAL_MAX_BOOST, VOCAL_TARGET_PEAK / peak);
-}
-
-/** highpass -> gain, shared by preview and mix so both sound the same. */
-export function createVocalChain(ctx, destination, peak) {
-  const hp = ctx.createBiquadFilter();
-  hp.type = 'highpass';
-  hp.frequency.value = VOCAL_HIGHPASS_HZ;
-  hp.Q.value = 0.707;
-  const gain = ctx.createGain();
-  gain.gain.value = vocalGain(peak);
-  hp.connect(gain).connect(destination);
-  return { input: hp, gain };
-}
-
 function bufferFrom(ctx, samples, sampleRate) {
   const buf = ctx.createBuffer(1, Math.max(1, samples.length), sampleRate);
   buf.copyToChannel(samples, 0);
   return buf;
 }
 
-/** Beat (pattern looped for the take's bars at the take's bpm) + vocal through the master chain. */
-export function renderMix(pattern, take, latencyMs, { OfflineAudioContext } = {}) {
-  const samples = alignedSamples(take, latencyMs);
-  return renderPatternOffline({ ...pattern, bpm: take.meta.bpm }, {
+// drops the first `frames` (the voice chain's look-ahead delay)
+function trimStart(buf, frames, Ctor) {
+  if (!frames) return buf;
+  const len = Math.max(1, buf.length - frames);
+  const out = new Ctor(buf.numberOfChannels, 1, buf.sampleRate).createBuffer(buf.numberOfChannels, len, buf.sampleRate);
+  for (let c = 0; c < buf.numberOfChannels; c++) out.copyToChannel(buf.getChannelData(c).subarray(frames), c);
+  return out;
+}
+
+const offlineCtor = (C) => {
+  const Ctor = C || globalThis.OfflineAudioContext;
+  if (!Ctor) throw new Error('OfflineAudioContext not available');
+  return Ctor;
+};
+
+/**
+ * Beat (pattern looped for the take's bars at the take's bpm, with its fx) +
+ * vocal through the voice chain, all through the master chain.
+ * opts: samples (processed aligned vocal; default dry), voice settings,
+ * voiceDelay (frames, from measureVoiceDelay), OfflineAudioContext.
+ */
+export async function renderMix(pattern, take, latencyMs, opts = {}) {
+  const { voice = DEFAULT_VOICE, voiceDelay = 0 } = opts;
+  const Ctor = offlineCtor(opts.OfflineAudioContext);
+  const samples = opts.samples || alignedSamples(take, latencyMs);
+  const peak = peakOf(samples); // level follows what is played: the tuned samples when tuning is on
+  const p = normalizePattern({ ...pattern, bpm: take.meta.bpm });
+  const startAt = voiceDelay / take.sampleRate;
+  const tail = Math.max(MIX_TAIL, fxTail(p.fx, p.bpm), voiceTail(voice, p.bpm));
+  const buf = await renderPatternOffline(p, {
     bars: take.meta.bars,
     sampleRate: take.sampleRate,
     channels: 2,
-    tail: MIX_TAIL,
-    OfflineAudioContext,
+    tail,
+    startAt,
+    OfflineAudioContext: Ctor,
     setup(ctx, bus) {
       const src = ctx.createBufferSource();
       src.buffer = bufferFrom(ctx, samples, take.sampleRate);
-      src.connect(createVocalChain(ctx, bus, peakOf(samples)).input);
+      src.connect(createVoiceChain(ctx, bus, {
+        peak, bpm: p.bpm, settings: voice, delay: voiceDelay,
+      }).input);
       src.start(0);
     },
   });
+  return trimStart(buf, voiceDelay, Ctor);
 }
 
 /** Dry, compensated mono take. Scaled down only if it would clip. */
 export function renderVocal(take, latencyMs, { OfflineAudioContext } = {}) {
-  const Ctor = OfflineAudioContext || globalThis.OfflineAudioContext;
-  if (!Ctor) throw new Error('OfflineAudioContext not available');
+  const Ctor = offlineCtor(OfflineAudioContext);
   const samples = alignedSamples(take, latencyMs);
   const peak = peakOf(samples);
   if (peak > 0.99) {
@@ -120,6 +133,35 @@ export function renderVocal(take, latencyMs, { OfflineAudioContext } = {}) {
     for (let i = 0; i < samples.length; i++) samples[i] *= k;
   }
   return bufferFrom(new Ctor(1, 1, take.sampleRate), samples, take.sampleRate);
+}
+
+/**
+ * Processed vocal: tuned samples through the voice chain (tone, reverb, echo),
+ * stereo, plus the effect tail. Scaled down only if it would clip.
+ */
+export async function renderProcessedVocal(take, latencyMs, opts = {}) {
+  const { voice = DEFAULT_VOICE, voiceDelay = 0 } = opts;
+  const Ctor = offlineCtor(opts.OfflineAudioContext);
+  const samples = opts.samples || alignedSamples(take, latencyMs);
+  const sr = take.sampleRate;
+  const tail = Math.max(0.3, voiceTail(voice, take.meta.bpm));
+  const ctx = new Ctor(2, voiceDelay + samples.length + Math.ceil(tail * sr), sr);
+  const src = ctx.createBufferSource();
+  src.buffer = bufferFrom(ctx, samples, sr);
+  src.connect(createVoiceChain(ctx, ctx.destination, {
+    peak: peakOf(samples), bpm: take.meta.bpm, settings: voice, delay: voiceDelay,
+  }).input);
+  src.start(0);
+  const buf = trimStart(await ctx.startRendering(), voiceDelay, Ctor);
+  let pk = 0;
+  for (let c = 0; c < buf.numberOfChannels; c++) pk = Math.max(pk, peakOf(buf.getChannelData(c)));
+  if (pk > 0.99) {
+    for (let c = 0; c < buf.numberOfChannels; c++) {
+      const d = buf.getChannelData(c);
+      for (let i = 0; i < d.length; i++) d[i] *= 0.99 / pk;
+    }
+  }
+  return buf;
 }
 
 const chainDelays = new Map();

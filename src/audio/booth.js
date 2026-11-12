@@ -1,15 +1,24 @@
-// Rap booth: mic input, count-in, bar-aligned recording, takes, preview, export.
+// Rap booth: mic input, count-in, bar-aligned recording, takes, voice effects, preview, export.
 import { createCapture } from './capture.js';
 import {
   PRE_ROLL, POST_ROLL, MIN_LATENCY_MS, MAX_LATENCY_MS, barSeconds, makeTake,
-  alignedOffset, alignedPeak, takeLatencyMs, createVocalChain, renderMix, renderVocal,
-  measureChainDelay,
+  alignedPeak, alignedSamples, takeLatencyMs, renderMix, renderVocal, renderProcessedVocal,
+  measureChainDelay, peakOf,
 } from './takes.js';
+import {
+  VOICE_PRESETS, DEFAULT_VOICE, normalizeVoice, tuningKey, correctPitch, detectPitch, createVoiceChain,
+  measureVoiceDelay, voiceTail,
+} from './voice.js';
 
 export const BAR_CHOICES = [2, 4, 8, 16];
 export const MIN_LATENCY_OFFSET = -200;
 export const MAX_LATENCY_OFFSET = 200;
 export { encodeWav } from './wav.js';
+
+// knob drags on tune/retune/key: wait for a pause before (re)starting a tuning run
+const RETUNE_DEBOUNCE_MS = 150;
+const wallClock = () => globalThis.performance?.now() ?? Date.now();
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 const LEAD = 0.15; // s from record()/playTake() to the first scheduled sound
 const MIN_LEAD = 0.05; // s; a downbeat closer than this is skipped
@@ -127,6 +136,15 @@ export function createBooth(engine, opts = {}) {
   let preferredId = null; // null = system default
   let lastFallback = false;
   let silentSince = null;
+  let voice = { ...DEFAULT_VOICE };
+  let voicePreset = 'clean';
+  const tuned = new Map(); // takeId -> { key, samples }
+  const jobs = new Map(); // takeId -> { key, promise, cancelled }
+  const pitches = new Map(); // takeId -> { lat, promise, cancelled }: pitch track, reused across tune settings
+  const correct = opts.correctPitch || correctPitch;
+  const detect = opts.detectPitch || detectPitch;
+  let lastRetune = -Infinity;
+  let waiting = 0; // callers holding off for the debounce
   const listeners = new Set();
   const deviceListeners = new Set();
   let deviceHandler = null;
@@ -492,6 +510,10 @@ export function createBooth(engine, opts = {}) {
     if (preview?.id === id) stopPreview();
     const [t] = takes.splice(i, 1);
     t.raw = null;
+    tuned.delete(id);
+    dropPitch(id);
+    const job = jobs.get(id);
+    if (job) { job.cancelled = true; jobs.delete(id); }
     if (selectedId === id) selectedId = takes.length ? takes[takes.length - 1].meta.id : null;
     emit();
   }
@@ -529,6 +551,15 @@ export function createBooth(engine, opts = {}) {
     preview = p;
     const ctx = await engine.resume();
     if (preview !== p) return;
+    const lat = latencyOf(take);
+    let samples, delay;
+    try {
+      [samples, delay] = await Promise.all([voiceSamples(take), voiceDelay(take.sampleRate)]);
+    } catch (e) {
+      if (preview === p) stopPreview();
+      throw e;
+    }
+    if (preview !== p) return;
     let t0 = ctx.currentTime + MIN_LEAD;
     if (withBeat) {
       // the take only lines up at its own tempo; the pattern bpm is left alone
@@ -545,20 +576,23 @@ export function createBooth(engine, opts = {}) {
       if (t0 == null) { stopPreview(); return; }
       if (p.startedBeat) engine.setEndTime(t0 + take.meta.duration);
     }
-    const lat = latencyOf(take);
-    const buf = ctx.createBuffer(1, take.raw.length, take.sampleRate);
-    buf.copyToChannel(take.raw, 0);
+    const buf = ctx.createBuffer(1, samples.length, take.sampleRate);
+    buf.copyToChannel(samples, 0);
     const src = ctx.createBufferSource();
     src.buffer = buf;
-    const chain = createVocalChain(ctx, engine.master, alignedPeak(take, lat));
+    const chain = createVoiceChain(ctx, engine.master, {
+      peak: peakOf(samples), bpm: take.meta.bpm, settings: voice, delay,
+    });
     src.connect(chain.input);
-    src.start(t0, alignedOffset(take, lat) / take.sampleRate, take.meta.duration);
+    // early by the chain's look-ahead so the voice is heard on the beat
+    src.start(Math.max(ctx.currentTime, t0 - delay / take.sampleRate));
     p.nodes = { src, chain };
-    src.onended = () => { if (preview === p) stopPreview(); };
+    src.onended = () => { if (preview === p) stopPreview(voiceTail(voice, take.meta.bpm)); };
     emit();
   }
 
-  function stopPreview() {
+  /** ringOut: seconds to let reverb/echo tails finish (natural end only). */
+  function stopPreview(ringOut = 0) {
     const p = preview;
     if (!p) return;
     preview = null;
@@ -567,23 +601,140 @@ export function createBooth(engine, opts = {}) {
       src.onended = null;
       try { src.stop(); } catch { /* not started */ }
       disconnect(src);
-      disconnect(chain.gain);
+      if (ringOut > 0) setTimeout(() => chain.dispose(), ringOut * 1000);
+      else chain.dispose();
     }
     if (p.override) engine.setTempoOverride(null);
     if (p.startedBeat && engine.isPlaying) engine.stop();
     emit();
   }
 
+  // ---- voice ----
+
+  const voiceDelay = (sr) => measureVoiceDelay(sr, Offline());
+  const voiceKey = (take) => `${latencyOf(take)}|${tuningKey(voice)}`;
+  const cancelJobs = () => { for (const j of jobs.values()) j.cancelled = true; };
+
+  /** Aligned samples of the take with the current pitch correction (cached per take). */
+  async function voiceSamples(take) {
+    for (;;) {
+      const id = take.meta.id;
+      if (!findTake(id)) throw new Error('no-take');
+      const lat = latencyOf(take);
+      if (!(voice.tune > 0)) return alignedSamples(take, lat);
+      const key = voiceKey(take);
+      const hit = tuned.get(id);
+      if (hit?.key === key) return hit.samples;
+      let job = jobs.get(id);
+      if (!job || job.key !== key) {
+        if (job) job.cancelled = true;
+        const wait = lastRetune + RETUNE_DEBOUNCE_MS - wallClock();
+        if (wait > 0) {
+          if (++waiting === 1) emit();
+          try { await sleep(wait); } finally { waiting--; }
+          // the next pass normally starts a job right away (and emits); report idle otherwise
+          Promise.resolve().then(() => { if (!waiting && !jobs.size) emit(); });
+          continue;
+        }
+        job = startJob(take, key, lat, { ...voice });
+      }
+      try {
+        return await job.promise;
+      } catch (e) {
+        // settings changed mid-run: go again with the new ones
+        if (e?.message !== 'voice-cancelled') throw e;
+      }
+    }
+  }
+
+  // only a latency change, deleting the take or dispose() stops a detection run
+  function pitchFor(take, lat, samples) {
+    const id = take.meta.id;
+    let e = pitches.get(id);
+    if (e && e.lat === lat) return e.promise;
+    if (e) e.cancelled = true;
+    e = { lat, cancelled: false, promise: null };
+    const entry = e;
+    e.promise = detect(samples, take.sampleRate, { isCancelled: () => entry.cancelled });
+    e.promise.catch(() => { if (pitches.get(id) === entry) pitches.delete(id); });
+    pitches.set(id, e);
+    return e.promise;
+  }
+
+  function dropPitch(id) {
+    const e = pitches.get(id);
+    if (e) { e.cancelled = true; pitches.delete(id); }
+  }
+
+  function startJob(take, key, lat, settings) {
+    const id = take.meta.id;
+    const job = { key, cancelled: false, promise: null };
+    job.promise = (async () => {
+      const samples = alignedSamples(take, lat);
+      const pitch = await pitchFor(take, lat, samples);
+      if (job.cancelled) throw new Error('voice-cancelled');
+      const out = await correct(samples, take.sampleRate, settings, { isCancelled: () => job.cancelled, pitch });
+      if (job.cancelled) throw new Error('voice-cancelled');
+      tuned.set(id, { key, samples: out });
+      return out;
+    })().finally(() => {
+      if (jobs.get(id) === job) { jobs.delete(id); emit(); }
+    });
+    job.promise.catch(() => {});
+    jobs.set(id, job);
+    emit();
+    return job;
+  }
+
+  async function prepareVoice(id) {
+    await voiceSamples(requireTake(id));
+  }
+
+  const voiceCopy = () => ({ ...voice, preset: voicePreset });
+  const isPreset = (pid) => typeof pid === 'string' && Object.hasOwn(VOICE_PRESETS, pid);
+  const matchesPreset = (v, pid) => isPreset(pid)
+    && Object.entries(VOICE_PRESETS[pid].settings).every(([k, x]) => v[k] === x);
+
+  function setVoice(v, presetId) {
+    const changed = Object.keys(v).some((k) => v[k] !== voice[k]);
+    if (!changed && presetId === voicePreset) return voiceCopy();
+    const retuned = tuningKey(v) !== tuningKey(voice);
+    voice = v;
+    voicePreset = presetId;
+    if (retuned) { cancelJobs(); lastRetune = wallClock(); }
+    // tone, reverb and echo follow live; tuning applies from the next play
+    preview?.nodes?.chain.apply(voice, true);
+    emit();
+    return voiceCopy();
+  }
+
+  function setVoicePreset(id) {
+    if (!isPreset(id)) throw new Error(`Unknown voice preset: ${id}`);
+    return setVoice(normalizeVoice({ ...voice, ...VOICE_PRESETS[id].settings }, voice), id);
+  }
+
+  function setVoiceSettings(partial) {
+    const v = normalizeVoice(partial, voice);
+    return setVoice(v, matchesPreset(v, voicePreset) ? voicePreset : null);
+  }
+
   // ---- export ----
 
   async function mix(id) {
     const take = requireTake(id);
-    return renderMix(engine.getPattern(), take, latencyOf(take), { OfflineAudioContext: Offline() });
+    const [samples, delay] = await Promise.all([voiceSamples(take), voiceDelay(take.sampleRate)]);
+    return renderMix(engine.getPattern(), take, latencyOf(take), {
+      OfflineAudioContext: Offline(), samples, voice: { ...voice }, voiceDelay: delay,
+    });
   }
 
-  async function vocal(id) {
+  async function vocal(id, { processed = false } = {}) {
     const take = requireTake(id);
-    return renderVocal(take, latencyOf(take), { OfflineAudioContext: Offline() });
+    if (!processed) return renderVocal(take, latencyOf(take), { OfflineAudioContext: Offline() });
+    const [samples, delay] = await Promise.all([voiceSamples(take), voiceDelay(take.sampleRate)]);
+    return renderProcessedVocal(take, latencyOf(take), {
+      OfflineAudioContext: Offline(), samples, voice: { ...voice }, voiceDelay: delay,
+    });
   }
 
   return {
@@ -648,11 +799,22 @@ export function createBooth(engine, opts = {}) {
     renderMix: mix,
     renderVocal: vocal,
 
+    /** { tune, retune, key, scale, tone, reverb, echo, preset } (preset: id, or null once edited) */
+    get voice() { return voiceCopy(); },
+    setVoicePreset,
+    setVoiceSettings,
+    prepareVoice,
+    get voiceBusy() { return jobs.size > 0 || waiting > 0; },
+    /** takes with a tuned result kept in memory */
+    get voiceCacheSize() { return tuned.size; },
+
     onChange(cb) {
       listeners.add(cb);
       return () => listeners.delete(cb);
     },
     dispose() {
+      cancelJobs();
+      for (const id of [...pitches.keys()]) dropPitch(id);
       stopPreview();
       closeMic();
       offState();

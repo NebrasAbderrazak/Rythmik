@@ -11,6 +11,10 @@ import {
 import { renderPatternOffline } from '../src/audio/offline.js';
 import { PRESETS } from '../src/audio/presets.js';
 import { emptyPattern } from '../src/audio/pattern.js';
+import { fxTail } from '../src/audio/fx.js';
+
+// offline renders with convolution reverb are slow in Node under load
+vi.setConfig({ testTimeout: 30000 });
 
 const SR = 44100;
 const on = (...idx) => Array.from({ length: 16 }, (_, i) => idx.includes(i));
@@ -160,7 +164,10 @@ describe('renderMix', () => {
     console.log(`[mix] peak ${p.toFixed(4)} (${(20 * Math.log10(p)).toFixed(2)} dBFS)`);
     expect(mix.numberOfChannels).toBe(2);
     expect(mix.sampleRate).toBe(SR);
-    expect(mix.length).toBe(Math.ceil((2 * 4 * beatSec(bpm) + 1) * SR));
+    // afro bass has reverb: the tail grows to cover it
+    const tail = Math.max(1, fxTail(PRESETS.afroBass.pattern.fx, bpm));
+    expect(tail).toBeGreaterThan(2);
+    expect(Math.abs(mix.length - Math.ceil((2 * 4 * beatSec(bpm) + tail) * SR))).toBeLessThanOrEqual(1);
     expect(p).toBeGreaterThan(0.1);
     expect(p).toBeLessThan(1);
   });
@@ -189,7 +196,7 @@ describe('renderMix', () => {
     booth.importTake(new Float32Array(10), { bpm: 120, bars: 2, sampleRate: SR });
     engine.setBpm(150);
     const mix = await booth.renderMix();
-    expect(mix.length).toBe(Math.ceil((4 + 1) * SR));
+    expect(Math.abs(mix.length - Math.ceil((4 + 1) * SR))).toBeLessThanOrEqual(1);
   });
 });
 

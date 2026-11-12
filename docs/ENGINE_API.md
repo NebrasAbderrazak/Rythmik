@@ -150,3 +150,46 @@ last bar, so latency changes can re-align existing takes.
 
 Each take stores the latency estimate from when it was recorded (`take.autoLatencyMs`); only the manual
 offset applies live. `take.latencyMs` is the total currently applied to that take.
+
+## Effects
+
+### Beat effects (engine)
+```js
+engine.setFx(name, value)                // returns the applied value, emits onPatternChange
+//   'reverb'   0..1   room on the whole beat ("Space")
+//   'echo'     0..1   tempo-synced delay amount
+//   'echoTime' '1/8' | '3/16' | '1/4'
+//   'filter'   -1..1  < 0 low-pass sweep, > 0 high-pass sweep, 0 = off
+//   'drive'    0..1   saturation
+engine.setTrackSend(trackId, 'reverb' | 'echo', 0..1)
+engine.getPattern().fx                   // { reverb, echo, echoTime, filter, drive, sends: { [trackId]: { reverb, echo } } }
+```
+Patterns are version 3. Version 1 and 2 patterns load with effects off. `renderBeat` and the booth mix include the beat effects.
+Unknown effect names, send kinds or tracks throw. Also exported from engine.js: `FX_NAMES`, `ECHO_TIMES`.
+Default sends (used until changed): kick and 808 none; snare, clap, rim, open hat some reverb and echo; hats/shaker a little.
+`renderBeat`'s default tail grows to cover echo/reverb ring-out (`beatTail(pattern)` in export.js gives the length used).
+
+### Voice effects (booth)
+```js
+import { VOICE_PRESETS, KEYS, SCALES, TONES } from './audio/voice.js';
+VOICE_PRESETS   // { clean, robot, tuned, radio, hall, lofi }: each { name, description, settings }
+KEYS            // ['C', 'C#', ... 'B'];  SCALES  // ['minor', 'major']
+
+booth.voice                              // current settings (copy) + preset: id, or null once a setting differs from it
+booth.setVoicePreset(id)                 // returns booth.voice; presets keep key and scale; throws on unknown id
+booth.setVoiceSettings(partial)          // returns booth.voice; { tune: 0..1, retune: 0..1 (0 = instant, robotic), key, scale,
+                                         //   tone: 'clean' | 'full' | 'radio' | 'lofi', reverb: 0..1, echo: 0..1 }
+                                         // 'clean' = 80 Hz highpass + level only (Clean preset, default); 'full' adds EQ + compressor
+await booth.prepareVoice(takeId?)        // runs pitch correction for the take (cached per take + tune settings)
+booth.voiceBusy                          // true while tuning
+// playTake, renderMix use the processed voice; renderVocal(takeId, { processed: true }) for the tuned vocal
+```
+- `onChange` fires on voice changes and when tuning starts/finishes (`voiceBusy` flips).
+- Tuning starts ~150 ms after the last tune/retune/key/scale change (knob drags do not restart it on every
+  step); `voiceBusy` is already true during that wait. The pitch track is kept per take, so these changes only
+  redo the correction. `booth.voiceCacheSize` = takes with a tuned result in memory.
+- Tone, reverb and echo follow live during a preview; tune/retune/key/scale apply from the next `playTake`
+  (which waits for tuning, so the first play after a change can take about a second).
+- `renderVocal(id, { processed: true })` is stereo and includes the reverb/echo tail; the default stays the dry mono take.
+- Echo on the voice is a dotted 1/8 at the take's tempo.
+Default key follows the 808 scale (A minor).
