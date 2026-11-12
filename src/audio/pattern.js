@@ -2,8 +2,9 @@ import {
   STEPS, TRACK_IDS, DEFAULT_BPM, DEFAULT_VOLUME, DEFAULT_MASTER, DEFAULT_BASS_NOTE,
   clampBpm, clampSwing, clampUnit, snapBassNote,
 } from './constants.js';
+import { defaultFx, normalizeFx } from './fx.js';
 
-export const PATTERN_VERSION = 2;
+export const PATTERN_VERSION = 3;
 
 const isObject = (x) => x !== null && typeof x === 'object' && !Array.isArray(x);
 
@@ -22,10 +23,11 @@ export function emptyPattern(bpm = DEFAULT_BPM) {
     steps,
     bassNotes: new Array(STEPS).fill(DEFAULT_BASS_NOTE),
     mixer,
+    fx: defaultFx(),
   };
 }
 
-/** Deep copy in the current shape; fills defaults, clamps, upgrades old 4-track patterns. */
+/** Deep copy in the current shape; fills defaults, clamps, upgrades old patterns (v1/v2: fx off). */
 export function normalizePattern(p) {
   const src = isObject(p) ? p : {};
   const out = emptyPattern(clampBpm(src.bpm));
@@ -55,6 +57,7 @@ export function normalizePattern(p) {
       solo: ch.solo === true,
     };
   }
+  out.fx = normalizeFx(src.fx);
   return out;
 }
 

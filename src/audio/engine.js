@@ -8,14 +8,16 @@ import {
   createVoiceState, silenceVoices,
 } from './sequence.js';
 import { emptyPattern, normalizePattern } from './pattern.js';
+import { createBeatFx, clampFx, FX_NAMES, SEND_KINDS, ECHO_TIMES } from './fx.js';
 
-export { STEPS, TRACKS, BASS_NOTES, MIN_BPM, MAX_BPM, MAX_SWING };
+export { STEPS, TRACKS, BASS_NOTES, MIN_BPM, MAX_BPM, MAX_SWING, FX_NAMES, ECHO_TIMES };
 
 /** Pass { context } to use an existing (e.g. offline) AudioContext. */
 export function createEngine(options = {}) {
   let context = null;
   let chain = null;
   let mixer = null;
+  let fx = null;
   let pattern = emptyPattern();
   let playing = false;
   let starting = null;
@@ -29,8 +31,12 @@ export function createEngine(options = {}) {
   function setupContext(ctx) {
     context = ctx;
     chain = createMasterChain(ctx);
-    mixer = createMixer(ctx, chain.master);
+    fx = createBeatFx(ctx, chain.master);
+    fx.setTempo(tempoOverride ?? pattern.bpm, false);
+    fx.apply(pattern.fx, false);
+    mixer = createMixer(ctx, fx.input, fx.sends);
     mixer.apply(pattern.mixer, false);
+    mixer.applySends(pattern.fx.sends, false);
     applyMaster(ctx, chain.master, pattern.master, false);
   }
   if (options.context) setupContext(options.context);
@@ -47,6 +53,12 @@ export function createEngine(options = {}) {
 
   const applyMixer = () => { if (mixer) mixer.apply(pattern.mixer, true); };
   const applyMasterVolume = () => { if (chain) applyMaster(context, chain.master, pattern.master, true); };
+  const applyFx = () => {
+    if (!fx) return;
+    fx.setTempo(tempoOverride ?? pattern.bpm, true);
+    fx.apply(pattern.fx, true);
+    mixer.applySends(pattern.fx.sends, true);
+  };
 
   const scheduler = new Scheduler({
     getContext: () => context,
@@ -115,6 +127,7 @@ export function createEngine(options = {}) {
     const next = clampBpm(n, pattern.bpm);
     if (next === pattern.bpm) return next;
     pattern.bpm = next;
+    applyFx();
     emitState();
     emitPattern();
     return next;
@@ -156,6 +169,22 @@ export function createEngine(options = {}) {
     return next;
   }
 
+  function setFx(name, value) {
+    if (!FX_NAMES.includes(name)) throw new Error(`Unknown effect: ${name}`);
+    const next = clampFx(name, value, pattern.fx[name]);
+    if (next !== pattern.fx[name]) { pattern.fx[name] = next; applyFx(); emitPattern(); }
+    return next;
+  }
+
+  function setTrackSend(trackId, kind, value) {
+    assertTrack(trackId);
+    if (!SEND_KINDS.includes(kind)) throw new Error(`Unknown send: ${kind}`);
+    const s = pattern.fx.sends[trackId];
+    const next = clampFx(kind, value, s[kind]);
+    if (next !== s[kind]) { s[kind] = next; applyFx(); emitPattern(); }
+    return next;
+  }
+
   const clock = {
     get bpm() { return pattern.bpm; },
     setBpm,
@@ -189,6 +218,7 @@ export function createEngine(options = {}) {
       pattern = normalizePattern(p);
       applyMixer();
       applyMasterVolume();
+      applyFx();
       if (pattern.bpm !== prevBpm) emitState();
       emitPattern();
     },
@@ -220,6 +250,8 @@ export function createEngine(options = {}) {
     setMute,
     setSolo,
     setMasterVolume,
+    setFx,
+    setTrackSend,
 
     getCurrentStep() { return playing ? scheduler.getCurrentStep() : -1; },
     /** Context time of the next pattern downbeat at or after minTime; null when stopped. */
@@ -233,6 +265,7 @@ export function createEngine(options = {}) {
     /** Play at this bpm without changing the pattern (null = pattern bpm). */
     setTempoOverride(bpm) {
       tempoOverride = bpm == null ? null : clampBpm(bpm, pattern.bpm);
+      applyFx();
     },
     onStateChange(cb) {
       stateListeners.add(cb);

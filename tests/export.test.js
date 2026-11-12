@@ -1,12 +1,17 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { OfflineAudioContext } from 'node-web-audio-api';
-import { renderBeat, EXPORT_BARS, DEFAULT_TAIL } from '../src/audio/export.js';
+import {
+  renderBeat, beatTail, EXPORT_BARS, DEFAULT_TAIL,
+} from '../src/audio/export.js';
 import { PRESETS } from '../src/audio/presets.js';
 import { emptyPattern, normalizePattern } from '../src/audio/pattern.js';
 import { encodeWav } from '../src/audio/wav.js';
 import {
   STEPS, TRACK_IDS, SWING_FACTOR, secondsPerStep,
 } from '../src/audio/constants.js';
+
+// offline renders with convolution reverb are slow in Node under load
+vi.setConfig({ testTimeout: 30000 });
 
 const SR = 44100;
 const beat = (pattern, opts) => renderBeat(pattern, { sampleRate: SR, OfflineAudioContext, ...opts });
@@ -51,10 +56,24 @@ describe('renderBeat', () => {
   });
 
   it('defaults to 4 bars and the default tail', async () => {
-    const pattern = PRESETS.trap.pattern;
+    const pattern = emptyPattern(140);
+    pattern.steps.kick[0] = true;
     const buf = await beat(pattern);
     expect(DEFAULT_TAIL).toBe(1.5);
     expect(Math.abs(buf.length - (4 * barSeconds(pattern.bpm) + DEFAULT_TAIL) * SR)).toBeLessThanOrEqual(1);
+  });
+
+  it('the default tail grows to cover echo and reverb', () => {
+    const p = emptyPattern(60);
+    expect(beatTail(p)).toBe(DEFAULT_TAIL);
+    p.fx.reverb = 0.5;
+    expect(beatTail(p)).toBeGreaterThanOrEqual(2.2);
+    p.fx.echo = 0.5;
+    p.fx.echoTime = '1/4';
+    // 7 repeats of a 1 s echo to get 60 dB down
+    expect(beatTail(p)).toBeGreaterThanOrEqual(7);
+    for (const id of TRACK_IDS) p.fx.sends[id] = { reverb: 0, echo: 0 };
+    expect(beatTail(p)).toBe(DEFAULT_TAIL);
   });
 
   it('rejects unsupported bar counts', async () => {

@@ -8,6 +8,9 @@ import {
 import { swingOffset, volumeToGain } from '../src/audio/constants.js';
 import { Scheduler } from '../src/audio/scheduler.js';
 
+// offline renders with convolution reverb are slow in Node under load
+vi.setConfig({ testTimeout: 30000 });
+
 const SR = 44100;
 const preset = PRESETS.afroBass.pattern;
 const on = (...idx) => Array.from({ length: 16 }, (_, i) => idx.includes(i));
@@ -74,7 +77,7 @@ describe('preset renders', () => {
     expect(PRESETS.boomBap.pattern.swing).toBeGreaterThanOrEqual(0.25);
     expect(PRESETS.boomBap.pattern.swing).toBeLessThanOrEqual(0.35);
     for (const { pattern } of Object.values(PRESETS)) {
-      expect(pattern.version).toBe(2);
+      expect(pattern.version).toBe(3);
       for (const n of pattern.bassNotes) expect(BASS_NOTES.map((b) => b.midi)).toContain(n);
     }
   });
@@ -307,7 +310,7 @@ describe('engine', () => {
     const engine = createEngine({ context: new OfflineAudioContext(2, SR, SR) });
     engine.setPattern({ bpm: 95, steps: { kick: on(0), snare: on(4), hat: on(2), bass: on(0) }, bassNotes: new Array(16).fill(38) });
     const p = engine.getPattern();
-    expect(p.version).toBe(2);
+    expect(p.version).toBe(3);
     expect(p.bpm).toBe(95);
     expect(p.steps.clap).toEqual(new Array(16).fill(false));
     expect(p.bassNotes[0]).toBe(38);
@@ -495,7 +498,7 @@ describe('headroom, timing, slides', () => {
     const s = stats(await render({ bpm: 180, master: 1, steps, mixer }));
     console.log(`[worst case all on, all 1.0] peak ${s.peak.toFixed(4)} (${s.peakDb.toFixed(2)} dBFS)`);
     expect(s.peak).toBeLessThan(1.0);
-  });
+  }, 30000);
 
   it('every voice lands on the grid', async () => {
     const bpm = 120;

@@ -152,9 +152,9 @@ export function isAudible(mixer, trackId) {
   return !ch.mute && (!anySolo || !!ch.solo);
 }
 
-// gate (mute/solo) -> fader -> destination. Auditions skip the gate so a
-// muted pad can still be previewed.
-export function createMixer(ctx, destination) {
+// gate (mute/solo) -> fader -> destination, fader -> send gains -> fx buses.
+// Auditions skip the gate so a muted pad can still be previewed.
+export function createMixer(ctx, destination, sendDests = null) {
   const channels = {};
   const inputs = {};
   const auditionInputs = {};
@@ -162,7 +162,15 @@ export function createMixer(ctx, destination) {
     const gate = ctx.createGain();
     const fader = ctx.createGain();
     gate.connect(fader).connect(destination);
-    channels[id] = { gate, fader };
+    const sends = {};
+    if (sendDests) {
+      for (const [kind, dest] of Object.entries(sendDests)) {
+        sends[kind] = ctx.createGain();
+        sends[kind].gain.value = 0;
+        fader.connect(sends[kind]).connect(dest);
+      }
+    }
+    channels[id] = { gate, fader, sends };
     inputs[id] = gate;
     auditionInputs[id] = fader;
   }
@@ -175,6 +183,14 @@ export function createMixer(ctx, destination) {
         const ch = mixer[id] || {};
         setParam(ctx, channels[id].fader.gain, volumeToGain(ch.volume), smooth);
         setParam(ctx, channels[id].gate.gain, isAudible(mixer, id) ? 1 : 0, smooth);
+      }
+    },
+    /** sends: { [trackId]: { reverb, echo } } */
+    applySends(sends, smooth = true) {
+      for (const id of TRACK_IDS) {
+        for (const [kind, node] of Object.entries(channels[id].sends)) {
+          setParam(ctx, node.gain, sends?.[id]?.[kind] ?? 0, smooth);
+        }
       }
     },
   };

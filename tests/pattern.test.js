@@ -11,7 +11,7 @@ const ids = TRACKS.map((t) => t.id);
 describe('pattern', () => {
   it('emptyPattern defaults', () => {
     const p = emptyPattern();
-    expect(p.version).toBe(2);
+    expect(p.version).toBe(3);
     expect(p.bpm).toBe(104);
     expect(p.swing).toBe(0);
     expect(p.master).toBe(0.8);
@@ -31,7 +31,7 @@ describe('pattern', () => {
       bassNotes: [33, 33, 33, 33, 33, 33, 36, 36, 36, 40, 40, 38, 38, 38, 36, 36],
     };
     const p = normalizePattern(legacy);
-    expect(p.version).toBe(2);
+    expect(p.version).toBe(3);
     expect(p.bpm).toBe(104);
     expect(p.swing).toBe(0);
     expect(p.steps.kick).toEqual(legacy.steps.kick);
@@ -67,7 +67,7 @@ describe('pattern', () => {
   it('serialize/parse round-trip', () => {
     for (const { pattern } of Object.values(PRESETS)) {
       const text = serializePattern(pattern);
-      expect(text).toContain('\n  "version": 2');
+      expect(text).toContain('\n  "version": 3');
       expect(parsePattern(text)).toEqual(pattern);
     }
     const custom = normalizePattern(PRESETS.trap.pattern);
@@ -79,7 +79,7 @@ describe('pattern', () => {
 
   it('parsePattern accepts an old file', () => {
     const p = parsePattern(JSON.stringify({ bpm: 90, steps: { kick: on(0) }, bassNotes: new Array(16).fill(36) }));
-    expect(p.version).toBe(2);
+    expect(p.version).toBe(3);
     expect(p.bpm).toBe(90);
     expect(p.steps.kick[0]).toBe(true);
   });
@@ -113,7 +113,7 @@ describe('pattern', () => {
       expect(() => parsePattern(text), text).toThrow('Not a Rythmik pattern file.');
     }
     expect(() => parsePattern(undefined)).toThrow('Not a Rythmik pattern file.');
-    expect(() => parsePattern('{"version": 3, "steps": {"kick": []}}'))
+    expect(() => parsePattern('{"version": 4, "steps": {"kick": []}}'))
       .toThrow('This pattern was made by a newer version of Rythmik.');
     try {
       parsePattern('{oops');
