@@ -106,7 +106,7 @@ sudo nginx -t && sudo systemctl reload nginx
 sudo certbot --nginx -d rythmik.example.com
 ```
 
-If you add a Content-Security-Policy header, allow `worker-src blob:`: the audio clock runs in a small inline Worker so the beat keeps time in background tabs.
+If you add a Content-Security-Policy header, allow `blob:` in `worker-src` and `script-src`: the audio clock runs in a small inline Worker (so the beat keeps time in background tabs) and mic capture uses an inline AudioWorklet.
 
 The build uses relative asset paths (`base: './'`), so it also works from a subfolder.
 

@@ -1,6 +1,7 @@
 import { TRACKS, STEPS, BASS_NOTES, MIN_BPM, MAX_BPM } from '../audio/engine.js';
 import { PRESETS } from '../audio/presets.js';
 import { createKnob } from './knob.js';
+import { mountBooth } from './booth.js';
 import {
   getDefaultStorage,
   loadSavedPattern,
@@ -262,9 +263,17 @@ export function mountApp(root, engine) {
     return document.createTextNode(t);
   }
 
+  // During a take: tempo, pattern loads and Play/Stop are locked (the take's BPM is
+  // fixed and stopping drops it). Pads, notes, swing and mixer stay live.
+  let boothLocked = false;
+  function setBoothLock(on) {
+    boothLocked = on;
+    for (const c of [playBtn, bpmNumber, bpmRange, importBtn, ...presetButtons]) c.disabled = on;
+  }
+
   const machine = el('div', { class: 'rk-machine' }, [
     header,
-    el('main', { class: 'rk-body' }, [transport, statusLine, sequencer]),
+    el('main', { class: 'rk-body' }, [transport, statusLine, sequencer, mountBooth(engine, { onLockChange: setBoothLock })]),
     footer,
   ]);
   root.replaceChildren(machine);
@@ -519,6 +528,7 @@ export function mountApp(root, engine) {
     if (e.ctrlKey || e.metaKey || e.altKey) return;
     if (blocksSpace(e.target)) return;
     e.preventDefault();
+    if (boothLocked) return; // stopping the beat would kill the take
     if (!e.repeat) togglePlay();
   });
   // Keep buttons from also "clicking" on Space keyup (Firefox).
