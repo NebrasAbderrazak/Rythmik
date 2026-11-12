@@ -139,6 +139,7 @@ export function createBooth(engine, opts = {}) {
   let lastFallback = false;
   let silentSince = null;
   let backing = 'beat';
+  let deckStops = 0; // engine stops caused by stopping the deck are not the user's
   let voice = { ...DEFAULT_VOICE };
   let voicePreset = 'clean';
   const tuned = new Map(); // takeId -> { key, samples }
@@ -370,9 +371,15 @@ export function createBooth(engine, opts = {}) {
 
   // ---- recording ----
 
+  // a playing deck (and the beat it may have synced) would not line up with a take over the beat
+  function stopDeck() {
+    if (!remix?.isPlaying) return;
+    deckStops++;
+    try { remix.stop(); } finally { deckStops--; }
+  }
+
   // bar 1 on the next pattern downbeat; starts the beat if it is not playing
   async function armBeat(r, ctx) {
-    if (remix?.isPlaying) remix.stop(); // it would not line up with the take
     const bpm = engine.clock.bpm;
     const bar = barSeconds(bpm);
     const ahead = countIn ? bar : 0;
@@ -393,21 +400,34 @@ export function createBooth(engine, opts = {}) {
     return true;
   }
 
-  // bar 1 on the loop start, after the count-in; the deck plays the beat if it is synced
+  /**
+   * Bar 1 on the loop start, after the count-in; the deck plays the beat if it is
+   * synced. With the loop off the take stops at the last whole bar before the
+   * song ends; under one bar it is cancelled.
+   */
   async function armRemix(r, ctx) {
-    await remix.prepareSnapshot(r.snap); // the stretch, when keep pitch is on
+    const { snap } = r;
+    await remix.prepareSnapshot(snap); // the stretch, when keep pitch is on
     if (r.cancelled || !mic) return false;
+    // the deck is locked, so this only trips if something went around the lock
+    if (remix.snapshot().buffer !== snap.buffer) throw new Error('busy');
+    const bpm = snap.bpm;
+    const bar = barSeconds(bpm);
+    let n = bars;
+    if (!snap.loop.enabled) {
+      const songBars = Math.floor((snap.buffer.duration - snap.loop.start) / snap.speed / bar + 1e-9);
+      n = Math.min(bars, songBars);
+      if (n < 1) { cancel(); return false; }
+    }
     r.ownsRemix = true;
     remix.stop();
     if (engine.isPlaying) engine.stop(); // a free-running beat would not line up
-    const bpm = r.snap.bpm;
-    const bar = barSeconds(bpm);
     const ahead = countIn ? bar : 0;
     const start = ctx.currentTime + LEAD + ahead;
     Object.assign(r, {
-      ctx, bpm, bar, bars, countIn, start, first: start - ahead, end: start + bars * bar,
+      ctx, bpm, bar, bars: n, countIn, start, first: start - ahead, end: start + n * bar,
     });
-    await remix.play({ from: r.snap.loop.start, at: start });
+    await remix.play({ from: snap.loop.start, at: start });
     if (r.cancelled || !mic) {
       remix.stop();
       return false;
@@ -421,10 +441,15 @@ export function createBooth(engine, opts = {}) {
     if (!mic) throw new Error('mic-closed');
     const snap = backing === 'remix' ? remixSnapshot() : null;
     stopPreview();
+    if (!snap) stopDeck();
     const r = {
-      cancelled: false, timers: [], clicks: [], startedBeat: false, remix: !!snap, snap,
+      cancelled: false, timers: [], clicks: [], startedBeat: false, remix: !!snap, snap, locked: false,
     };
     rec = r;
+    if (snap) {
+      r.locked = true;
+      remix.setLocked(true);
+    }
     emit();
     try {
       const ctx = await engine.resume();
@@ -439,7 +464,7 @@ export function createBooth(engine, opts = {}) {
       const sr = ctx.sampleRate;
       const pre = Math.round(PRE_ROLL * sr);
       const from = Math.round(start * sr) - pre;
-      const to = from + pre + Math.round(bars * bar * sr) + Math.round(POST_ROLL * sr);
+      const to = from + pre + Math.round(r.bars * bar * sr) + Math.round(POST_ROLL * sr);
       const at = (t) => Math.max(0, (t - ctx.currentTime) * 1000);
       r.timers.push(setTimeout(emit, at(start)));
       if (r.startedBeat || r.remix) {
@@ -484,6 +509,10 @@ export function createBooth(engine, opts = {}) {
   function finishRecording(r) {
     for (const t of r.timers) clearTimeout(t);
     stopOwnBeat(r);
+    if (r.locked) {
+      r.locked = false;
+      remix.setLocked(false);
+    }
     if (rec === r) rec = null;
   }
 
@@ -523,15 +552,15 @@ export function createBooth(engine, opts = {}) {
   // user stopped the beat: drop the take (the post-roll alone doesn't matter).
   // Over the remix the deck is the backing; the beat is only an extra.
   const offState = engine.onStateChange(({ isPlaying }) => {
-    if (isPlaying) return;
+    if (isPlaying || deckStops) return;
     if (rec && !rec.remix && !rec.beatDone && (!rec.end || rec.ctx.currentTime < rec.end)) cancel();
     if (preview?.withBeat && !preview.remix) stopPreview();
   });
 
-  // the deck stopped mid-take (user, or a new song): drop the take; no song: back to the beat
+  // the deck stopped mid-take: drop the take. No song or no BPM: back to the beat
   const offRemix = remix ? remix.onChange(() => {
-    if (rec?.remixStarted && !rec.beatDone && !remix.isPlaying && rec.ctx.currentTime < rec.end) cancel();
-    if (backing === 'remix' && !remix.loaded) { backing = 'beat'; emit(); }
+    if (rec?.remixStarted && !rec.beatDone && !remix.isPlaying && rec.ctx.currentTime < rec.end - 0.01) cancel();
+    if (backing === 'remix' && (!remix.loaded || remix.sourceBpm == null)) { backing = 'beat'; emit(); }
   }) : () => {};
 
   function remixSnapshot() {
@@ -631,6 +660,7 @@ export function createBooth(engine, opts = {}) {
     if (rec) throw new Error('busy');
     stopPreview();
     const overRemix = withBeat && !!take.backing;
+    if (withBeat && !overRemix) stopDeck();
     const p = {
       id: take.meta.id, withBeat, startedBeat: false, override: false, nodes: null, remix: overRemix, backing: null,
     };
@@ -657,12 +687,13 @@ export function createBooth(engine, opts = {}) {
       }
       if (preview !== p) return;
       if (engine.isPlaying) engine.stop();
-      t0 = ctx.currentTime + LEAD;
-      const handle = await remix.playSnapshot(take.backing, { at: t0, duration: take.meta.duration });
+      const handle = await remix.playSnapshot(take.backing, {
+        at: ctx.currentTime + LEAD, duration: take.meta.duration,
+      });
       if (preview !== p) { handle.stop(); return; }
       p.backing = handle;
+      t0 = handle.startTime; // later than asked if getting ready took long
     } else if (withBeat) {
-      if (remix?.isPlaying) remix.stop();
       // the take only lines up at its own tempo; the pattern bpm is left alone
       engine.setTempoOverride(take.meta.bpm);
       p.override = true;

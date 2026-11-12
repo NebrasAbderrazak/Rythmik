@@ -23,6 +23,7 @@ import { detectBpm } from './tempo.js';
 export const MIN_SPEED = 0.5;
 export const MAX_SPEED = 1.5;
 export const MAX_SONG_SECONDS = 15 * 60;
+export const MAX_FILE_BYTES = 200 * 1024 * 1024;
 export const MIN_LOOP_SECONDS = 0.5;
 export const MIN_SOURCE_BPM = 40;
 export const MAX_SOURCE_BPM = 220;
@@ -52,13 +53,14 @@ export const REMIX_PRESETS = {
 const LEAD = 0.1; // s from play() to sound; past the beat scheduler's own start delay
 const SWITCH_LEAD = 0.03; // restarts are scheduled this far ahead so old and new line up
 const FADE = 0.015; // crossfade on restarts and stops
-const FADE_IN = 0.005; // from silence: just enough to avoid a click
+const FADE_IN = 0.005;
 const ANCHOR_LEAD = 0.15; // beat re-alignments must land past the scheduler's look-ahead
 const STRETCH_DEBOUNCE_MS = 200;
-const STRETCH_CACHE = 3; // stretched copies kept per song
+const STRETCH_CACHE = 2; // stretched copies kept per song (each is as big as the song)
 const MIN_CONFIDENCE = 0.1; // below this a detected tempo is not used
 const MIN_TAIL = 0.1; // s, covers the master chain look-ahead and the last fade
 const DECODE_RATE = 48000; // only when no AudioContext exists yet
+const MAX_PEAK_COLUMNS = 8192;
 
 const BASS_HZ = 100;
 const BASS_MAX_DB = 9;
@@ -181,24 +183,53 @@ function startVoice(ctx, dest, sound, loop, from, at, fadeIn, duration) {
     src.loopEnd = loop.end * sound.scale;
   }
   const fade = ctx.createGain();
+  fade.gain.value = 0;
   fade.gain.setValueAtTime(0, at);
   fade.gain.linearRampToValueAtTime(1, at + fadeIn);
   src.connect(fade).connect(dest);
   src.start(at, Math.min(from * sound.scale, sound.buffer.duration));
   return {
-    src, fade, fadeIn, t0: at, pos0: from, speed: sound.speed, sound, loop: { ...loop }, duration, stopped: false,
+    src,
+    fade,
+    fadeIn,
+    fadeOutAt: null,
+    fadeOutFrom: 1,
+    t0: at,
+    pos0: from,
+    speed: sound.speed,
+    sound,
+    loop: { ...loop },
+    duration,
+    stopped: false,
   };
 }
 
-/** Fades the voice out from context time `at` (also fine before it started). */
+/** Gain of the voice's fade at context time t, as scheduled. */
+function fadeLevel(v, t) {
+  const up = clamp((t - v.t0) / v.fadeIn, 0, 1);
+  if (v.fadeOutAt === null || t <= v.fadeOutAt) return up;
+  return v.fadeOutFrom * clamp(1 - (t - v.fadeOutAt) / FADE, 0, 1);
+}
+
+/**
+ * Fades the voice out from context time `at` (also fine before it started, or
+ * in the middle of its fade-in). Linear ramps only: a target curve here turns
+ * into NaN in some implementations.
+ */
 function fadeOutVoice(v, at) {
+  if (v.fadeOutAt !== null && v.fadeOutAt <= at) return; // already fading by then
   const g = v.fade.gain;
-  // linear ramps only: no cancelAndHold in Firefox, and a target curve here
-  // turns into NaN in some implementations
-  const level = clamp((at - v.t0) / v.fadeIn, 0, 1);
-  g.cancelScheduledValues(at);
-  g.setValueAtTime(level, at);
+  const level = fadeLevel(v, at);
+  if (typeof g.cancelAndHoldAtTime === 'function') {
+    g.cancelAndHoldAtTime(at);
+  } else {
+    // Firefox: cancel, then ramp to where the cancelled curve would have been
+    g.cancelScheduledValues(at);
+    g.linearRampToValueAtTime(level, at);
+  }
   g.linearRampToValueAtTime(0, at + FADE);
+  v.fadeOutAt = at;
+  v.fadeOutFrom = level;
   try { v.src.stop(at + FADE + 0.005); } catch { /* already stopped */ }
 }
 
@@ -261,6 +292,24 @@ export function gridSteps(first, spb, anchors, end) {
   return out;
 }
 
+/** Channels for the stretch: mono and stereo as they are, more folded down to stereo. */
+function stretchInput(buffer) {
+  const n = buffer.numberOfChannels;
+  if (n <= 2) return Array.from({ length: n }, (_, c) => buffer.getChannelData(c));
+  const out = [new Float32Array(buffer.length), new Float32Array(buffer.length)];
+  const count = [0, 0];
+  for (let c = 0; c < n; c++) {
+    const d = buffer.getChannelData(c);
+    const o = out[c % 2];
+    for (let i = 0; i < d.length; i++) o[i] += d[i];
+    count[c % 2]++;
+  }
+  out.forEach((o, k) => { for (let i = 0; i < o.length; i++) o[i] /= count[k]; });
+  return out;
+}
+
+const byteSize = (input) => input?.byteLength ?? input?.size ?? 0;
+
 async function toArrayBuffer(input) {
   if (input instanceof ArrayBuffer) return input;
   if (ArrayBuffer.isView(input)) return input.buffer.slice(input.byteOffset, input.byteOffset + input.byteLength);
@@ -290,11 +339,16 @@ export function createRemix(engine, opts = {}) {
   let chain = null;
   let voice = null;
   let playGen = 0;
+  let pending = null; // { gen, pos } while play() waits for the stretched copy
+  let locked = false;
+  let disposed = false;
   let decodeCtx = null;
+  const players = new Set(); // playSnapshot handles still sounding
   const stretches = new WeakMap(); // song buffer -> Map(speed -> AudioBuffer)
   const jobs = []; // { buffer, speed, pinned, cancelled, promise }
   let stretchTimer = null;
   let beatOwner = null; // token of whoever started the beat (the deck or a take preview)
+  let beatGen = 0; // a takeBeat that resumes after a newer one (or a release) must not touch the engine
   let switching = false; // our own engine stop/start, not the user's
   const DECK = { name: 'deck' };
   const listeners = new Set();
@@ -316,11 +370,12 @@ export function createRemix(engine, opts = {}) {
   // anchors() runs once the beat is running: start() clears them, and the
   // voice may have been restarted while it was starting
   async function takeBeat(owner, { bpm, at, anchors, endTime }) {
+    const gen = ++beatGen;
     beatOwner = owner;
     engine.setTempoOverride(bpm);
     stopEngine();
     await engine.start({ at });
-    if (beatOwner !== owner) return;
+    if (gen !== beatGen || beatOwner !== owner) return;
     engine.setBarAnchors(anchors());
     if (Number.isFinite(endTime)) engine.setEndTime(endTime);
   }
@@ -328,6 +383,7 @@ export function createRemix(engine, opts = {}) {
   function releaseBeat(owner) {
     if (!owner || beatOwner !== owner) return;
     beatOwner = null;
+    beatGen++;
     engine.setTempoOverride(null);
     stopEngine();
   }
@@ -384,11 +440,12 @@ export function createRemix(engine, opts = {}) {
     }
     const job = { buffer, speed, pinned, cancelled: false, promise: null };
     job.promise = (async () => {
-      const chans = [];
-      for (let c = 0; c < Math.min(2, buffer.numberOfChannels); c++) chans.push(buffer.getChannelData(c));
-      const out = await stretch(chans, buffer.sampleRate, speed, { isCancelled: () => job.cancelled });
-      const ab = bufferContext().createBuffer(out.length, Math.max(1, out[0].length), buffer.sampleRate);
-      out.forEach((d, c) => ab.copyToChannel(d, c));
+      const chans = stretchInput(buffer);
+      const ab = bufferContext().createBuffer(
+        chans.length, Math.max(1, Math.round(buffer.length / speed)), buffer.sampleRate,
+      );
+      const output = chans.map((_, c) => ab.getChannelData(c));
+      await stretch(chans, buffer.sampleRate, speed, { isCancelled: () => job.cancelled, output });
       let m = stretches.get(buffer);
       if (!m) stretches.set(buffer, (m = new Map()));
       m.set(speed, ab);
@@ -416,8 +473,9 @@ export function createRemix(engine, opts = {}) {
     if (want == null || cachedStretch(song.buffer, want) || liveJob(song.buffer, want)) return;
     stretchTimer = setTimeout(() => {
       stretchTimer = null;
-      if (song && wantedStretch() === want) stretchJob(song.buffer, want, false).catch(() => {});
-      else emit();
+      if (song && wantedStretch() === want && !cachedStretch(song.buffer, want)) {
+        stretchJob(song.buffer, want, false).catch(() => {});
+      } else emit();
     }, STRETCH_DEBOUNCE_MS);
   }
 
@@ -466,25 +524,49 @@ export function createRemix(engine, opts = {}) {
     return p;
   }
 
+  // keep pitch: wait for the stretched copy rather than play the plain one
+  async function stretchReady(gen, pos) {
+    for (;;) {
+      const want = wantedStretch();
+      if (want === null || cachedStretch(song.buffer, want)) break;
+      const first = !pending;
+      pending = { gen, pos };
+      if (first) emit();
+      try {
+        await stretchJob(song.buffer, want, false);
+      } catch (e) {
+        // cancelled because the speed moved on: wait for the new one
+        if (e?.message !== 'stretch-cancelled') {
+          if (pending?.gen === gen) { pending = null; emit(); }
+          throw e;
+        }
+      }
+      if (gen !== playGen || !song) return false;
+    }
+    if (pending?.gen === gen) pending = null;
+    return true;
+  }
+
   /**
    * opts.from: source time (default loop start, or 0 with the loop off);
-   * opts.at: context time to start (default right away).
+   * opts.at: context time to start (default right away). With keep pitch on and
+   * the stretch not ready yet, it waits for it (isPlaying and pending are true).
    */
   async function play({ from, at } = {}) {
     if (!song) throw new Error('no-song');
     const gen = ++playGen;
     const ctx = await engine.resume();
     if (gen !== playGen || !song) return;
-    const dest = liveChain(ctx).input;
-    const t = Math.max(ctx.currentTime + LEAD, Number.isFinite(at) ? at : 0);
     if (voice) {
       retireVoice(voice, ctx.currentTime);
+      voice = null;
       releaseBeat(DECK); // restarted below on the new bar 1
     }
-    const sound = targetSound() || soundOf(song.buffer, settings.speed, null);
-    voice = startVoice(ctx, dest, sound, loop, startPosition(from), t, FADE_IN, song.buffer.duration);
+    const pos = startPosition(from);
+    if (!(await stretchReady(gen, pos))) return;
+    const t = Math.max(ctx.currentTime + LEAD, Number.isFinite(at) ? at : 0);
+    voice = startVoice(ctx, liveChain(ctx).input, targetSound(), loop, pos, t, FADE_IN, song.buffer.duration);
     watchEnd(voice);
-    scheduleStretch();
     emit();
     syncDeckBeat();
   }
@@ -492,10 +574,21 @@ export function createRemix(engine, opts = {}) {
   function stop() {
     playGen++;
     const v = voice;
+    const was = !!v || !!pending;
     voice = null;
+    pending = null;
     if (v) retireVoice(v, engine.context.currentTime);
     releaseBeat(DECK);
-    if (v) emit();
+    if (was) emit();
+  }
+
+  // the deck is playing the original at a changed rate although keep pitch is on
+  const playsPlain = (v) => v.sound.buffer === song?.buffer && v.sound.rate !== 1 && wantedStretch() !== null;
+
+  // stops the plain sound and plays again from the same spot once the stretch is ready
+  function waitForStretch() {
+    const pos = voicePosition(voice, engine.context.currentTime);
+    play({ from: pos }).catch((e) => console.error(e));
   }
 
   /**
@@ -504,6 +597,7 @@ export function createRemix(engine, opts = {}) {
    */
   function restart() {
     if (!voice || !song) return;
+    if (!targetSound() && playsPlain(voice)) { waitForStretch(); return; }
     const ctx = engine.context;
     let t = Math.max(ctx.currentTime + SWITCH_LEAD, voice.t0);
     let pos = voicePosition(voice, t);
@@ -521,15 +615,19 @@ export function createRemix(engine, opts = {}) {
     syncDeckBeat();
   }
 
+  // a stretched copy at the old speed may keep playing until the new one is ready; the plain sound may not
   function followSound() {
     if (!voice) return;
     const target = targetSound();
-    if (target && (target.buffer !== voice.sound.buffer || target.rate !== voice.sound.rate)) restart();
+    if (target) {
+      if (target.buffer !== voice.sound.buffer || target.rate !== voice.sound.rate) restart();
+    } else if (playsPlain(voice)) waitForStretch();
   }
 
   // ---- settings ----
 
   function update(partial) {
+    if (locked) return;
     const next = normalizeRemix(partial, settings);
     if (next.beatSync && !settings.beatSync && sourceBpm == null) next.beatSync = false;
     const soundChanged = next.speed !== settings.speed || next.keepPitch !== settings.keepPitch;
@@ -553,12 +651,13 @@ export function createRemix(engine, opts = {}) {
   }
 
   function setSourceBpm(n) {
+    if (locked) return sourceBpm;
     let next;
     if (n === null) next = null;
     else {
       const v = Number(n);
       if (n === '' || typeof n === 'boolean' || !Number.isFinite(v)) return sourceBpm;
-      next = round1(clamp(v, MIN_SOURCE_BPM, MAX_SOURCE_BPM));
+      next = clamp(v, MIN_SOURCE_BPM, MAX_SOURCE_BPM);
     }
     bpmManual = true;
     if (next !== sourceBpm) {
@@ -569,7 +668,7 @@ export function createRemix(engine, opts = {}) {
   }
 
   function setLoop(start, end) {
-    if (!song) return { ...loop };
+    if (!song || locked) return { ...loop };
     const d = song.buffer.duration;
     const num = (x, fallback) => (Number.isFinite(Number(x)) && x !== null && x !== '' ? Number(x) : fallback);
     let s = clamp(num(start, loop.start), 0, d);
@@ -589,6 +688,7 @@ export function createRemix(engine, opts = {}) {
   }
 
   function setLoopEnabled(on) {
+    if (locked) return loop.enabled;
     const next = !!on;
     if (next !== loop.enabled) {
       loop = { ...loop, enabled: next };
@@ -630,9 +730,14 @@ export function createRemix(engine, opts = {}) {
     scheduleStretch();
   }
 
-  /** Decodes and replaces the current song. Rejects Error('decode-failed' | 'too-long' | 'busy'). */
+  /**
+   * Decodes and replaces the current song. Rejects Error('decode-failed' |
+   * 'too-long' | 'too-large' | 'busy' (loading, or locked by a take) | 'cancelled' (disposed)).
+   */
   async function load(input, { name } = {}) {
-    if (loading) throw new Error('busy');
+    if (loading || locked) throw new Error('busy');
+    if (disposed) throw new Error('cancelled');
+    if (byteSize(input) > MAX_FILE_BYTES) throw new Error('too-large');
     loading = true;
     try {
       let decoded = null;
@@ -642,8 +747,10 @@ export function createRemix(engine, opts = {}) {
       } catch (e) {
         if (e?.message === 'Web Audio API not supported') throw e;
       }
+      if (disposed) throw new Error('cancelled');
       if (!decoded || !(decoded.length > 0)) throw new Error('decode-failed');
       if (decoded.duration > MAX_SONG_SECONDS) throw new Error('too-long');
+      if (locked) throw new Error('busy');
       clearSong();
       song = {
         buffer: decoded,
@@ -662,6 +769,7 @@ export function createRemix(engine, opts = {}) {
   }
 
   function unload() {
+    if (locked) throw new Error('busy');
     if (!song) return;
     clearSong();
     emit();
@@ -674,10 +782,11 @@ export function createRemix(engine, opts = {}) {
     channels: song.buffer.numberOfChannels,
   } : null);
 
-  /** min/max per column over all channels, columns spread evenly over the song. */
+  /** min/max per column (1..8192) over all channels, columns spread evenly over the song. */
   function getPeaks(columns) {
-    const cols = Math.floor(Number(columns));
-    if (!song || !(cols > 0)) return { min: new Float32Array(0), max: new Float32Array(0) };
+    const n = Math.floor(Number(columns));
+    const cols = Number.isFinite(n) ? clamp(n, 1, MAX_PEAK_COLUMNS) : 1;
+    if (!song) return { min: new Float32Array(0), max: new Float32Array(0) };
     let hit = song.peaks.get(cols);
     if (!hit) {
       const buf = song.buffer;
@@ -800,11 +909,13 @@ export function createRemix(engine, opts = {}) {
   /**
    * Plays a snapshot (its own settings, not the deck's) from its loop start at
    * context time `at`, with the beat if it was synced. Stops the deck.
-   * Resolves with { stop(ringOut) }.
+   * Resolves with { startTime, stop(ringOut) }; startTime is later than `at`
+   * when getting ready took too long.
    */
   async function playSnapshot(snap, { at, duration = Infinity } = {}) {
     const ctx = await engine.resume();
     const sound = await soundFor(snap);
+    if (disposed) return { startTime: ctx.currentTime, stop() {} };
     stop();
     const deck = createDeckChain(ctx, engine.master);
     deck.apply(snap, false);
@@ -819,15 +930,29 @@ export function createRemix(engine, opts = {}) {
       }).catch((e) => console.error(e));
     }
     let done = false;
-    return {
+    const handle = {
+      startTime: t,
       stop(ringOut = 0) {
         if (done) return;
         done = true;
+        players.delete(handle);
         retireVoice(v, ctx.currentTime);
         releaseBeat(token);
         setTimeout(() => deck.dispose(), (FADE * 3 + Math.max(0, ringOut)) * 1000);
       },
     };
+    players.add(handle);
+    return handle;
+  }
+
+  /** While locked (a take is being recorded over the deck) song and settings stay put. */
+  function setLocked(on) {
+    const next = !!on;
+    if (next !== locked) {
+      locked = next;
+      emit();
+    }
+    return locked;
   }
 
   return {
@@ -839,18 +964,21 @@ export function createRemix(engine, opts = {}) {
 
     play,
     stop,
-    get isPlaying() { return !!voice; },
-    getPosition() { return voice && engine.context ? voicePosition(voice, engine.context.currentTime) : null; },
+    get isPlaying() { return !!voice || !!pending; },
+    /** true while play() waits for the keep-pitch stretch */
+    get pending() { return !!pending; },
+    getPosition() {
+      if (pending) return pending.pos;
+      return voice && engine.context ? voicePosition(voice, engine.context.currentTime) : null;
+    },
     setLoop,
     setLoopEnabled,
     get loop() { return { ...loop }; },
 
     setSpeed(x) { update({ speed: x }); return settings.speed; },
     setKeepPitch(on) { update({ keepPitch: !!on }); return settings.keepPitch; },
-    /** true while the stretch for the current speed is pending or running */
-    get stretchBusy() {
-      return stretchTimer !== null || (wantedStretch() !== null && !!liveJob(song.buffer, wantedStretch()));
-    },
+    /** true while any stretch is waiting or running (also when a take needs one again) */
+    get stretchBusy() { return stretchTimer !== null || jobs.some((j) => !j.cancelled); },
     setFx(name, value) {
       if (!REMIX_FX.includes(name)) throw new Error(`Unknown effect: ${name}`);
       update({ [name]: value });
@@ -873,6 +1001,8 @@ export function createRemix(engine, opts = {}) {
 
     render,
 
+    get locked() { return locked; },
+    setLocked,
     snapshot,
     prepareSnapshot: (snap) => soundFor(snap).then(() => {}),
     playSnapshot,
@@ -883,7 +1013,10 @@ export function createRemix(engine, opts = {}) {
       return () => listeners.delete(cb);
     },
     dispose() {
+      disposed = true;
+      locked = false;
       clearSong();
+      for (const h of [...players]) h.stop();
       for (const j of jobs) j.cancelled = true;
       offEngine();
       chain?.dispose();

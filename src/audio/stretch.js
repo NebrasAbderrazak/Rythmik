@@ -15,19 +15,25 @@ export const stretchFrameSize = (sampleRate) => (sampleRate > 64000 ? 4096 : 204
 /**
  * channels: Float32Array[] (1 or 2 used, same length). speed 0.8 = slower and
  * longer. Output sample j lines up with input sample j * speed.
- * opts: yield(), isCancelled() (then it rejects with Error('stretch-cancelled')).
+ * opts: yield(), isCancelled() (then it rejects with Error('stretch-cancelled')),
+ * output (zeroed Float32Array per channel to write into, e.g. an AudioBuffer's
+ * channel data, so the result is not copied once more).
  * @returns {Promise<Float32Array[]>} each Math.round(length / speed) long
  */
 export async function timeStretch(channels, sampleRate, speed, opts = {}) {
   const used = channels.slice(0, 2);
   const n = used[0]?.length || 0;
-  if (speed === 1 || n === 0) return used.map((c) => c.slice());
+  if (speed === 1 || n === 0) {
+    if (!opts.output) return used.map((c) => c.slice());
+    used.forEach((c, k) => opts.output[k].set(c.subarray(0, opts.output[k].length)));
+    return opts.output;
+  }
   if (!(speed > 0)) throw new RangeError(`Bad speed: ${speed}`);
   const tick = makeYielder(opts, 'stretch-cancelled');
   const stereo = used.length > 1;
   const inL = used[0];
   const inR = stereo ? used[1] : null;
-  const outLen = Math.round(n / speed);
+  const outLen = opts.output ? opts.output[0].length : Math.round(n / speed);
 
   const N = stretchFrameSize(sampleRate);
   const half = N / 2;
@@ -40,8 +46,8 @@ export async function timeStretch(channels, sampleRate, speed, opts = {}) {
   for (let i = 0; i < N; i += Hs) ola += win[i] * win[i];
   const gain = 1 / ola;
 
-  const outL = new Float32Array(outLen);
-  const outR = stereo ? new Float32Array(outLen) : null;
+  const outL = opts.output?.[0] || new Float32Array(outLen);
+  const outR = stereo ? opts.output?.[1] || new Float32Array(outLen) : null;
   const re = new Float64Array(N);
   const im = new Float64Array(N);
   const spec = () => new Float64Array(bins);

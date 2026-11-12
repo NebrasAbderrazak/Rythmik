@@ -210,17 +210,23 @@ const remix = createRemix(engine);       // optional: createRemix(engine, { Offl
 
 // file
 await remix.load(fileOrArrayBuffer, { name })  // decodes; resolves with remix.info. Rejects Error('decode-failed' |
-                                              // 'too-long' (> 15 min) | 'busy'). Replaces the current song.
+                                              // 'too-long' (> 15 min) | 'too-large' (file > 200 MB, checked before
+                                              // reading) | 'busy' (already loading, or locked) | 'cancelled' (disposed)).
+                                              // Replaces the current song.
 remix.loaded                                  // boolean
 remix.info                                    // { name, duration, sampleRate, channels } or null
-remix.unload()
-remix.getPeaks(columns)                       // { min: Float32Array, max: Float32Array } per column, source time, for a waveform
+remix.unload()                                // throws Error('busy') while locked
+remix.getPeaks(columns)                       // { min: Float32Array, max: Float32Array } per column, source time, for a
+                                              // waveform; columns is made a whole number in 1..8192
 
 // transport (source time = seconds in the original file)
 remix.play({ from, at })                      // from defaults to the loop start (or 0 when the loop is off);
-                                              // at: context time to start (default ~0.1 s from now). Returns a promise
+                                              // at: context time to start (default ~0.1 s from now). Returns a promise.
+                                              // With keep pitch on it waits for the stretch first (never plays the
+                                              // plain sound at another speed)
 remix.stop()
-remix.isPlaying
+remix.isPlaying                               // also true while waiting for the stretch
+remix.pending                                 // true while play() waits for the stretch
 remix.getPosition()                           // current source time, for the playhead; null when stopped
 remix.setLoop(start, end)                     // source seconds, clamped, at least 0.5 s long; returns remix.loop
 remix.setLoopEnabled(bool)                    // default true, loop = whole song after load
@@ -233,11 +239,13 @@ SPEED_PRESETS                                 // [{ id: 'superSlowed', name: 'Su
                                               //  { id: 'spedUp', name: 'Sped up', speed: 1.25 }]
 remix.setSpeed(x)                             // MIN_SPEED 0.5 .. MAX_SPEED 1.5; pitch follows speed (classic "slowed")
 remix.setKeepPitch(bool)                      // Advanced: time-stretch offline so pitch stays; default false
-remix.stretchBusy                             // true while stretching; playback keeps the old sound until done
+remix.stretchBusy                             // true while any stretch is waiting or running (also when a take needs
+                                              // an evicted speed again). A stretched copy at the old speed keeps
+                                              // playing until the new one is ready; the plain sound pauses instead
 remix.setFx(name, value)                      // returns the applied value
 //   'reverb'  0..1  "Space"
 //   'muffle'  0..1  low-pass, 0 = off (bypassed), 1 = about 500 Hz ("underwater / next room")
-//   'bass'    0..1  low shelf boost, up to +9 dB
+//   'bass'    0..1  low shelf (100 Hz) up to +9 dB, with the deck level 3 dB lower at full: lows +6 dB net, rest -3 dB
 //   'volume'  0..1  deck level (0.8 = unity, same curve as track faders, after a fixed -3 dB trim for headroom)
 REMIX_PRESETS                                 // { original, slowedReverb, nightcore }: each { name, settings }
 remix.applyPreset(id)                         // "Slowed + reverb" = speed 0.85, reverb ~0.5, muffle a little
@@ -247,17 +255,18 @@ remix.setSettings(partial)                    // for restoring saved settings
 // tempo
 remix.sourceBpm                               // detected (or set) tempo of the original file; null if unknown
 remix.bpmConfidence                           // 0..1 from detection
-remix.setSourceBpm(n | null)                  // manual / tap; 40..220
-remix.effectiveBpm                            // sourceBpm * speed (rounded to 0.1), null if unknown
+remix.setSourceBpm(n | null)                  // manual / tap; 40..220, kept unrounded
+remix.effectiveBpm                            // sourceBpm * speed (rounded to 0.1, for display), null if unknown
 remix.setBeatSync(bool)                       // the beat plays along at effectiveBpm, bar 1 on the loop start; needs a BPM
                                               // (returns false without one). Stays on across songs; the beat only plays
                                               // while a BPM is known
 remix.bpmBusy                                 // true while detecting after load
 
-await detectBpm(audioBuffer)                  // { bpm, confidence } (onset envelope + autocorrelation, 70..180 folded);
-                                              // async, yields while working; bpm null on silence / clips under 4 s
-const tap = createTapTempo(); tap.tap(timeMs) // returns bpm after 2+ taps, null before; resets after a 2 s gap
-tap.reset(); tap.count
+await detectBpm(audioBuffer)                  // { bpm, confidence } (onset envelope + autocorrelation, 70..180 folded,
+                                              // rounded to 0.01); async, yields while working; bpm null on silence /
+                                              // clips under 4 s. Long songs: the middle 2 minutes
+const tap = createTapTempo(); tap.tap(timeMs) // returns bpm (40..220) after 2+ taps, null before; resets after a 2 s
+tap.reset(); tap.count                        // gap; a time that is not a number is ignored
 
 // export
 await remix.render({ loopOnly = true, withBeat = settings.beatSync })   // AudioBuffer, processed as you hear it
@@ -273,10 +282,17 @@ remix.dispose()
 - Song detection runs once after `load` resolves; a song only gets `sourceBpm` when confidence is at least 0.1.
   `setSourceBpm` wins over a detection still running.
 - Keep pitch: phase vocoder with phase locking, both channels in sync. Starts 200 ms after the last speed change,
-  about 7 s for a 4-minute song at 0.85x on a mid-range laptop; up to 3 speeds kept per song.
+  about 7 s for a 4-minute song at 0.85x on a mid-range laptop; up to 2 speeds kept per song (each copy is as
+  big as the song). Files with more than 2 channels are folded to stereo for the stretch.
 - `render` also takes `sampleRate` and `OfflineAudioContext`. Rejects `Error('no-song')` without a song.
 - Used by the booth: `remix.snapshot()` (throws `no-remix` / `no-bpm`), `prepareSnapshot(snap)`,
-  `playSnapshot(snap, { at, duration })`, `renderSnapshot(snap, opts)`.
+  `playSnapshot(snap, { at, duration })` (resolves `{ startTime, stop(ringOut) }`), `renderSnapshot(snap, opts)`,
+  `remix.setLocked(bool)`.
+- `remix.locked`: true while the booth records over the deck (set from `record()` until the take ends or is
+  cancelled; `onChange` fires on both flips). While locked, `setSpeed`, `setKeepPitch`, `setFx`, `applyPreset`,
+  `setSettings`, `setBeatSync`, `setSourceBpm`, `setLoop` and `setLoopEnabled` change nothing and return the
+  current value; `load` rejects and `unload` throws `Error('busy')`. Play/stop still work (stop drops the take).
+- `dispose()` also stops take previews and makes a load in flight reject `Error('cancelled')`.
 
 ### Recording over the remix
 ```js
@@ -284,7 +300,7 @@ booth.setBacking('beat' | 'remix')            // needs createBooth(engine, { rem
                                               // with a BPM. Rejects/throws Error('busy') while recording
 booth.backing                                 // 'beat' (default) | 'remix'
                                               // setBacking('remix') throws Error('no-remix' | 'no-bpm'); unloading the
-                                              // song switches back to 'beat'
+                                              // song or clearing its BPM switches back to 'beat' (onChange fires)
 ```
 With the remix as backing, a take starts on the loop start (bar 1) and is `bars` bars at `remix.effectiveBpm`.
 The count-in clicks at that tempo. The beat only plays along if beat sync is on. Each take keeps a snapshot of
@@ -297,3 +313,5 @@ take still lines up after you change speed. Changing the loop start or speed aft
   a beat that is playing without sync is stopped. Stopping the deck mid-take drops the take (`record()` resolves
   `null`); stopping the beat does not. Recording or previewing over the beat stops a playing deck.
 - `playTake(id, { withBeat: true })` on a remix take plays its snapshot (song + synced beat), not the live deck.
+- Loop off: the take stops at the last whole bar before the song ends (`take.bars` can be less than `booth.bars`);
+  with less than one bar of song left after the loop start, `record()` resolves `null`.

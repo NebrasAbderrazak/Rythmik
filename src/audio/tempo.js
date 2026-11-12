@@ -11,6 +11,7 @@ const HOP = 64; // ~5.8 ms
 const SEARCH_MIN = 50;
 const SEARCH_MAX = 220;
 const COMB = 4; // beat multiples summed per candidate tempo
+const FINE_COMB = 32; // more multiples for the last digits: the error at k beats is k times smaller
 const MIN_SECONDS = 4;
 const MAX_SECONDS = 120; // longer songs: the middle two minutes (skips long intros, plenty for 0.1 BPM)
 const MEAN_WINDOW = 0.4; // s, local mean removed from the onset envelope
@@ -18,7 +19,11 @@ const MEAN_WINDOW = 0.4; // s, local mean removed from the onset envelope
 const PRIOR_CENTRE = 120;
 const PRIOR_OCTAVES = 1;
 
+const TAP_MIN_BPM = 40;
+const TAP_MAX_BPM = 220;
+
 const round1 = (x) => Math.round(x * 10) / 10;
+const round2 = (x) => Math.round(x * 100) / 100;
 
 /**
  * Mono at about 11 kHz: plain averaging of D samples is a crude lowpass, but the
@@ -112,6 +117,33 @@ function interp(ac, x) {
   return ac[i] * (1 - f) + ac[i + 1] * f;
 }
 
+/** Normalised autocorrelation at single lags, computed on demand (long lags, few of them). */
+function lagCorrelator(e) {
+  const n = e.length;
+  let zero = 0;
+  for (let i = 0; i < n; i++) zero += e[i] * e[i];
+  zero /= n;
+  const memo = new Map();
+  const at = (lag) => {
+    if (lag < 0 || lag >= n) return 0;
+    let v = memo.get(lag);
+    if (v === undefined) {
+      let s = 0;
+      for (let i = 0, m = n - lag; i < m; i++) s += e[i] * e[i + lag];
+      v = s / (n - lag) / zero;
+      memo.set(lag, v);
+    }
+    return v;
+  };
+  // Catmull-Rom between whole lags: smooth, so the peak is not pulled to a whole lag
+  return (x) => {
+    const i = Math.floor(x);
+    const t = x - i;
+    const p0 = at(i - 1), p1 = at(i), p2 = at(i + 1), p3 = at(i + 2);
+    return p1 + 0.5 * t * (p2 - p0 + t * (2 * p0 - 5 * p1 + 4 * p2 - p3 + t * (3 * (p1 - p2) + p3 - p0)));
+  };
+}
+
 const fold = (bpm) => {
   let b = bpm;
   while (b < DETECT_MIN_BPM) b *= 2;
@@ -124,7 +156,7 @@ const fold = (bpm) => {
  * @param buffer AudioBuffer (or { sampleRate, length, numberOfChannels, getChannelData })
  * @param [opts] yield(), isCancelled()
  * @returns {Promise<{ bpm: number | null, confidence: number }>} bpm folded into 70..180,
- *   rounded to 0.1; null (confidence 0) when there is no rhythm to measure
+ *   rounded to 0.01; null (confidence 0) when there is no rhythm to measure
  */
 export async function detectBpm(buffer, opts = {}) {
   const none = { bpm: null, confidence: 0 };
@@ -160,35 +192,56 @@ export async function detectBpm(buffer, opts = {}) {
     if (w > bestWeighted) { bestWeighted = w; best = bpm; }
   }
   // refine on the plain score so the prior cannot pull the peak sideways
-  let fine = best;
-  let fineScore = score(best);
+  let coarse = best;
+  let coarseScore = score(best);
   for (let bpm = best - 0.15; bpm <= best + 0.15; bpm += 0.005) {
     const s = score(bpm);
-    if (s > fineScore) { fineScore = s; fine = bpm; }
+    if (s > coarseScore) { coarseScore = s; coarse = bpm; }
   }
   const mean = sum / count;
-  const confidence = Math.max(0, Math.min(1, (fineScore - mean) / (1 - mean)));
-  if (!(fineScore > mean)) return none;
-  return { bpm: round1(fold(fine)), confidence: Math.round(confidence * 100) / 100 };
+  if (!(coarseScore > mean)) return none;
+  const confidence = Math.max(0, Math.min(1, (coarseScore - mean) / (1 - mean)));
+
+  const corr = lagCorrelator(env);
+  const K = Math.max(COMB, Math.min(FINE_COMB, Math.floor(env.length / 2 / lagOf(coarse))));
+  const fineScore = (bpm) => {
+    const L = lagOf(bpm);
+    let s = 0;
+    for (let k = 1; k <= K; k++) s += corr(k * L);
+    return s;
+  };
+  let fine = coarse;
+  let fineBest = fineScore(coarse);
+  for (let bpm = coarse - 0.25; bpm <= coarse + 0.25; bpm += 0.002) {
+    if ((Math.round(bpm * 500) & 7) === 0) await tick();
+    const s = fineScore(bpm);
+    if (s > fineBest) { fineBest = s; fine = bpm; }
+  }
+  return { bpm: round2(fold(fine)), confidence: Math.round(confidence * 100) / 100 };
 }
 
 /**
  * tap(timeMs) returns the tempo of the taps so far (null before the second
- * tap). A gap over resetMs starts over. Averages the last `maxTaps` taps.
+ * tap), clamped to 40..220. A gap over resetMs starts over; a time that is not
+ * a number is ignored. Averages the last `maxTaps` taps.
  */
 export function createTapTempo({ resetMs = 2000, maxTaps = 8 } = {}) {
   let taps = [];
   const now = () => globalThis.performance?.now() ?? Date.now();
+  const current = () => {
+    const interval = (taps[taps.length - 1] - taps[0]) / (taps.length - 1);
+    return round1(Math.min(TAP_MAX_BPM, Math.max(TAP_MIN_BPM, 60000 / interval)));
+  };
   return {
     tap(timeMs = now()) {
       const t = Number(timeMs);
+      if (!Number.isFinite(t)) return taps.length < 2 ? null : current();
       const last = taps[taps.length - 1];
       if (last !== undefined && (t - last > resetMs || t <= last)) taps = [];
       taps.push(t);
       if (taps.length > maxTaps) taps.shift();
       if (taps.length < 2) return null;
-      const interval = (taps[taps.length - 1] - taps[0]) / (taps.length - 1);
-      return round1(60000 / interval);
+      return current();
     },
     reset() { taps = []; },
     get count() { return taps.length; },

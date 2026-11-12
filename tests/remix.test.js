@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import { OfflineAudioContext, AudioContext, AudioWorkletNode } from 'node-web-audio-api';
 import { createEngine } from '../src/audio/engine.js';
 import { createBooth } from '../src/audio/booth.js';
@@ -106,6 +106,10 @@ function instrumentedContext() {
   Object.defineProperty(ctx, 'state', { configurable: true, get: () => 'running' });
   Object.defineProperty(ctx, 'currentTime', { configurable: true, get: () => ctl.now });
   ctx.resume = async () => {};
+  // drop the overrides so the context can render
+  ctl.release = () => {
+    delete ctx.state; delete ctx.currentTime; delete ctx.resume;
+  };
   return { ctx, ctl };
 }
 
@@ -191,10 +195,11 @@ describe('load', () => {
     const detect = () => new Promise((r) => { finish = r; });
     const { remix } = await loadedRemix(makeBuffer(1, sine(220)), { detectBpm: detect });
     await flush();
-    expect(remix.setSourceBpm(101.27)).toBe(101.3);
+    expect(remix.setSourceBpm(101.27)).toBe(101.27); // kept exact; only effectiveBpm is rounded
+    expect(remix.effectiveBpm).toBe(101.3);
     finish({ bpm: 140, confidence: 0.9 });
     await flush();
-    expect(remix.sourceBpm).toBe(101.3);
+    expect(remix.sourceBpm).toBe(101.27);
     expect(remix.setSourceBpm(10)).toBe(40);
     expect(remix.setSourceBpm(999)).toBe(220);
     expect(remix.setSourceBpm('x')).toBe(220);
@@ -209,7 +214,10 @@ describe('load', () => {
     expect(max[0]).toBeCloseTo(0.1, 2);
     expect(max[3]).toBeCloseTo(0.8, 2);
     expect(min[3]).toBeCloseTo(-0.8, 2);
-    expect(remix.getPeaks(0).max.length).toBe(0);
+    expect(remix.getPeaks(0).max.length).toBe(1);
+    expect(remix.getPeaks('x').max.length).toBe(1);
+    expect(remix.getPeaks(1e9).max.length).toBe(8192);
+    expect(remix.getPeaks(3.7).max.length).toBe(3);
   });
 });
 
@@ -540,13 +548,18 @@ describe('deck transport (manual clock)', () => {
     expect(created).toHaveBeenCalledTimes(2); // pitch follows speed: restarts right away
     remix.setKeepPitch(true);
     expect(remix.stretchBusy).toBe(true);
-    await new Promise((r) => setTimeout(r, 300)); // debounce
+    await flush();
+    // the plain sound at 0.8 has the wrong pitch: it stops, the deck waits for the stretch
+    expect(remix.pending).toBe(true);
+    expect(remix.isPlaying).toBe(true);
+    expect(created).toHaveBeenCalledTimes(2);
+    await new Promise((r) => setTimeout(r, 300));
     expect(stretchSpy).toHaveBeenCalledTimes(1);
-    expect(created).toHaveBeenCalledTimes(2); // still the old sound
     release();
     await flush();
     await flush();
     expect(remix.stretchBusy).toBe(false);
+    expect(remix.pending).toBe(false);
     expect(created).toHaveBeenCalledTimes(3);
     const src = created.mock.results[2].value;
     expect(src.playbackRate.value).toBe(1);
@@ -777,4 +790,303 @@ describe('booth over the remix', () => {
       await ctx.close();
     }
   }, 10000);
+});
+
+describe('deck and booth together', () => {
+  const contexts = [];
+  afterEach(async () => {
+    for (const c of contexts.splice(0)) await c.close();
+  });
+
+  async function realtime({ seconds = 6, bpm = 180, pattern = emptyPattern(180) } = {}) {
+    const ctx = new AudioContext({ sinkId: { type: 'none' }, latencyHint: 'interactive' });
+    contexts.push(ctx);
+    const engine = createEngine({ context: ctx });
+    engine.setPattern(pattern);
+    const remix = createRemix(engine, { OfflineAudioContext, detectBpm: noDetect });
+    await remix.load(wavOf(makeBuffer(seconds, sine(110, 0.2), 1, ctx.sampleRate)));
+    remix.setSourceBpm(bpm);
+    const track = { stop: vi.fn(), getSettings: () => ({}) };
+    const stream = { getTracks: () => [track], getAudioTracks: () => [track] };
+    const booth = createBooth(engine, {
+      remix, getUserMedia: async () => stream, createSource: (c) => c.createGain(), OfflineAudioContext, AudioWorkletNode,
+    });
+    return { ctx, engine, remix, booth };
+  }
+
+  it('recording over the beat while the deck plays with beat sync: the take is kept, nothing is left running', async () => {
+    const { engine, remix, booth } = await realtime();
+    remix.setBeatSync(true);
+    await remix.play();
+    await flush();
+    expect(engine.isPlaying).toBe(true);
+    await booth.openMic();
+    booth.setBars(2);
+    booth.setCountIn(false);
+    const take = await booth.record();
+    expect(take).toBeTruthy();
+    expect(take.bpm).toBe(180);
+    expect(take.backing).toEqual({ type: 'beat' });
+    expect(remix.isPlaying).toBe(false);
+    expect(engine.isPlaying).toBe(false);
+    expect(engine.tempoOverride).toBe(null);
+    booth.dispose();
+  }, 20000);
+
+  it('previewing a beat take while the deck plays with beat sync plays the take at its tempo', async () => {
+    const { ctx, engine, remix, booth } = await realtime({ pattern: emptyPattern(90) });
+    remix.setBeatSync(true);
+    await remix.play();
+    await flush();
+    booth.importTake(new Float32Array(10), { bpm: 120, bars: 2, sampleRate: ctx.sampleRate });
+    await booth.playTake(undefined, { withBeat: true });
+    expect(booth.previewTakeId).toBeTruthy();
+    expect(remix.isPlaying).toBe(false);
+    expect(engine.isPlaying).toBe(true);
+    expect(engine.clock.secondsPerStep).toBeCloseTo(60 / 120 / 4, 9);
+    booth.stopPreview();
+    expect(engine.isPlaying).toBe(false);
+    expect(engine.tempoOverride).toBe(null);
+    booth.dispose();
+  }, 20000);
+
+  it('the deck is locked while a take is recorded over it', async () => {
+    const { remix, booth } = await realtime();
+    await booth.openMic();
+    booth.setBars(2);
+    booth.setBacking('remix');
+    const flips = [];
+    remix.onChange(() => { if (flips.at(-1) !== remix.locked) flips.push(remix.locked); });
+    const before = remix.settings;
+    const loop = remix.loop;
+    const pending = booth.record();
+    expect(remix.locked).toBe(true);
+    expect(remix.setSpeed(0.7)).toBe(before.speed);
+    expect(remix.setKeepPitch(true)).toBe(false);
+    expect(remix.setFx('reverb', 1)).toBe(0);
+    expect(remix.setBeatSync(true)).toBe(false);
+    expect(remix.setSourceBpm(100)).toBe(180);
+    expect(remix.applyPreset('nightcore')).toEqual(before);
+    expect(remix.setSettings({ bass: 1 })).toEqual(before);
+    expect(remix.setLoop(1, 2)).toEqual(loop);
+    expect(remix.setLoopEnabled(false)).toBe(true);
+    await expect(remix.load(wavOf(makeBuffer(1, sine(220))))).rejects.toThrow('busy');
+    expect(() => remix.unload()).toThrow('busy');
+    expect(await pending).toBeTruthy();
+    expect(remix.locked).toBe(false);
+    expect(flips).toEqual([true, false]);
+    expect(remix.setSpeed(0.7)).toBe(0.7);
+    booth.dispose();
+  }, 20000);
+
+  it('with the loop off the take ends on the last whole bar of the song; under one bar it is dropped', async () => {
+    // 180 BPM: 1.33 s bars; from 1 s a 6 s song has 3 whole bars left
+    const { remix, booth } = await realtime();
+    await booth.openMic();
+    booth.setBars(4);
+    booth.setCountIn(false);
+    remix.setLoopEnabled(false);
+    remix.setLoop(1, 6);
+    booth.setBacking('remix');
+    const take = await booth.record();
+    expect(take.bars).toBe(3);
+    expect(take.duration).toBeCloseTo(4, 9);
+    remix.setLoop(5, 6);
+    expect(await booth.record()).toBe(null);
+    expect(booth.takes.length).toBe(1);
+    expect(remix.locked).toBe(false);
+    booth.dispose();
+  }, 20000);
+
+  it('the booth goes back to the beat when the BPM is cleared', async () => {
+    const engine = offlineEngine();
+    const remix = createRemix(engine, { OfflineAudioContext, detectBpm: noDetect });
+    await remix.load(wavOf(makeBuffer(2, sine(220))));
+    remix.setSourceBpm(120);
+    const booth = createBooth(engine, { OfflineAudioContext, remix });
+    booth.setBacking('remix');
+    const cb = vi.fn();
+    booth.onChange(cb);
+    remix.setSourceBpm(null);
+    expect(booth.backing).toBe('beat');
+    expect(cb).toHaveBeenCalled();
+  });
+});
+
+describe('remix guards', () => {
+  function slowDecode(engine) {
+    const ctl = {};
+    const real = engine.context.decodeAudioData.bind(engine.context);
+    engine.context.decodeAudioData = (data) => new Promise((r) => { ctl.finish = () => r(real(data)); });
+    return ctl;
+  }
+
+  it("a load already decoding when the deck gets locked is refused with 'busy'", async () => {
+    const engine = offlineEngine();
+    const decode = slowDecode(engine);
+    const remix = createRemix(engine, { detectBpm: noDetect });
+    const pending = remix.load(wavOf(makeBuffer(1, sine(220))));
+    await flush();
+    remix.setLocked(true);
+    decode.finish();
+    await expect(pending).rejects.toThrow('busy');
+    expect(remix.loaded).toBe(false);
+  });
+
+  it("files over 200 MB are refused before reading with 'too-large'", async () => {
+    const remix = createRemix(offlineEngine(), { OfflineAudioContext, detectBpm: noDetect });
+    const arrayBuffer = vi.fn();
+    await expect(remix.load({ size: 201 * 1024 * 1024, arrayBuffer })).rejects.toThrow('too-large');
+    expect(arrayBuffer).not.toHaveBeenCalled();
+  });
+
+  it('dispose cancels a load in flight', async () => {
+    const engine = offlineEngine();
+    const decode = slowDecode(engine);
+    const remix = createRemix(engine, { detectBpm: noDetect });
+    const pending = remix.load(wavOf(makeBuffer(1, sine(220))));
+    await flush();
+    remix.dispose();
+    decode.finish();
+    await expect(pending).rejects.toThrow('cancelled');
+    expect(remix.loaded).toBe(false);
+  });
+
+  it('dispose stops take previews and the beat they started', async () => {
+    const { ctx } = instrumentedContext();
+    const engine = createEngine({ context: ctx });
+    const remix = createRemix(engine, { OfflineAudioContext, detectBpm: noDetect });
+    await remix.load(wavOf(makeBuffer(2, sine(220))));
+    remix.setSourceBpm(120);
+    remix.setBeatSync(true);
+    await remix.playSnapshot(remix.snapshot(), { at: 0.1, duration: 4 });
+    await flush();
+    expect(engine.isPlaying).toBe(true);
+    remix.dispose();
+    expect(engine.isPlaying).toBe(false);
+    expect(engine.tempoOverride).toBe(null);
+  });
+
+  it('tap tempo clamps to 40..220 and ignores junk times', () => {
+    const tap = createTapTempo();
+    tap.tap(0);
+    expect(tap.tap(100)).toBe(220);
+    expect(tap.tap(Number.NaN)).toBe(220);
+    expect(tap.count).toBe(2);
+    tap.reset();
+    expect(tap.tap('x')).toBe(null);
+    tap.tap(0);
+    expect(tap.tap(1900)).toBe(40);
+  });
+
+  it('a 4-minute song: tempo to within 0.05 BPM', async () => {
+    const { bpm } = await detectBpm(clickTrack(97.3, 240, { hats: true }));
+    expect(Math.abs(bpm - 97.3)).toBeLessThanOrEqual(0.05);
+  });
+});
+
+describe('stretch memory and waiting', () => {
+  it('writes into the given output arrays', async () => {
+    // keep the buffer referenced: node-web-audio-api frees channel data with it
+    const buf = makeBuffer(1, sine(440));
+    const x = buf.getChannelData(0);
+    const out = [new Float32Array(Math.round(x.length / 0.8))];
+    const res = await timeStretch([x], SR, 0.8, { output: out });
+    expect(res[0]).toBe(out[0]);
+    expect(buf.length).toBe(SR);
+    expect(peak({ numberOfChannels: 1, getChannelData: () => out[0] })).toBeGreaterThan(0.4);
+  });
+
+  it('keeps two speeds per song; an evicted one is stretched again and shows as busy', async () => {
+    let gate = Promise.resolve();
+    const spy = vi.fn(async (chans, sr, speed, o) => {
+      await gate;
+      return o.output;
+    });
+    const { remix } = await loadedRemix(makeBuffer(1, sine(220)), { timeStretch: spy });
+    remix.setKeepPitch(true);
+    for (const speed of [0.8, 0.9, 0.7]) {
+      remix.setSpeed(speed);
+      await remix.render();
+    }
+    expect(spy).toHaveBeenCalledTimes(3);
+    await remix.render(); // 0.7 is cached
+    expect(spy).toHaveBeenCalledTimes(3);
+    let release;
+    gate = new Promise((r) => { release = r; });
+    remix.setSpeed(0.8); // evicted
+    const changes = vi.fn();
+    remix.onChange(changes);
+    const job = remix.render();
+    await flush();
+    expect(remix.stretchBusy).toBe(true);
+    expect(changes).toHaveBeenCalled();
+    release();
+    await job;
+    await new Promise((r) => setTimeout(r, 300)); // the live debounce for 0.8 finds it cached
+    expect(spy).toHaveBeenCalledTimes(4);
+    expect(remix.stretchBusy).toBe(false);
+  });
+
+  it('play() with keep pitch waits for the stretch and never plays the plain sound', async () => {
+    let release;
+    const gate = new Promise((r) => { release = r; });
+    const spy = vi.fn(async (chans, sr, speed, o) => { await gate; return o.output; });
+    const { ctx } = instrumentedContext();
+    const engine = createEngine({ context: ctx });
+    const remix = createRemix(engine, { OfflineAudioContext, detectBpm: noDetect, timeStretch: spy });
+    await remix.load(wavOf(makeBuffer(2, sine(220))));
+    remix.setSettings({ speed: 0.8, keepPitch: true });
+    const created = vi.spyOn(ctx, 'createBufferSource');
+    const playing = remix.play();
+    await flush();
+    expect(remix.isPlaying).toBe(true);
+    expect(remix.pending).toBe(true);
+    expect(remix.getPosition()).toBe(0);
+    expect(created).not.toHaveBeenCalled();
+    release();
+    await playing;
+    expect(remix.pending).toBe(false);
+    expect(created).toHaveBeenCalledTimes(1);
+    expect(created.mock.results[0].value.playbackRate.value).toBe(1);
+    remix.stop();
+    expect(remix.isPlaying).toBe(false);
+  });
+});
+
+describe('restarts never click', () => {
+  // largest sample-to-sample step of the output, with a burst of speed and loop changes 8 ms apart
+  async function maxStep({ changes, hideHold = false }) {
+    const { ctx, ctl } = instrumentedContext();
+    const engine = createEngine({ context: ctx });
+    const remix = createRemix(engine, { OfflineAudioContext, detectBpm: noDetect });
+    await remix.load(wavOf(makeBuffer(4, sine(110, 0.5))));
+    const proto = Object.getPrototypeOf(ctx.createGain().gain);
+    const saved = Object.getOwnPropertyDescriptor(proto, 'cancelAndHoldAtTime');
+    if (hideHold && saved) Object.defineProperty(proto, 'cancelAndHoldAtTime', { value: undefined, configurable: true });
+    try {
+      await remix.play();
+      if (changes) {
+        for (let k = 0; k < 12; k++) {
+          ctl.now = 0.2 + k * 0.008;
+          if (k % 2) remix.setSpeed(k % 4 === 1 ? 0.9 : 1);
+          else remix.setLoop(0, 3.5 - k * 0.01);
+        }
+      }
+    } finally {
+      if (saved) Object.defineProperty(proto, 'cancelAndHoldAtTime', saved);
+    }
+    ctl.release();
+    const out = (await ctx.startRendering()).getChannelData(0);
+    let step = 0;
+    for (let i = Math.round(0.15 * SR); i < Math.round(0.8 * SR); i++) step = Math.max(step, Math.abs(out[i] - out[i - 1]));
+    return step;
+  }
+
+  it.each([false, true])('without cancelAndHoldAtTime: %s', async (hideHold) => {
+    const baseline = await maxStep({ changes: false });
+    const step = await maxStep({ changes: true, hideHold });
+    expect(baseline).toBeGreaterThan(0);
+    expect(step).toBeLessThan(baseline * 1.5);
+  });
 });
