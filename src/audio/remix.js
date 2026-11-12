@@ -19,15 +19,16 @@ import { DEFAULT_TAIL } from './export.js';
 import { snapToAnchors } from './scheduler.js';
 import { timeStretch } from './stretch.js';
 import { detectBpm } from './tempo.js';
+import { makeYielder } from './work.js';
 
 export const MIN_SPEED = 0.5;
 export const MAX_SPEED = 1.5;
-export const MAX_SONG_SECONDS = 15 * 60;
+export const MAX_SONG_SECONDS = 10 * 60;
 export const MAX_FILE_BYTES = 200 * 1024 * 1024;
 export const MIN_LOOP_SECONDS = 0.5;
 export const MIN_SOURCE_BPM = 40;
 export const MAX_SOURCE_BPM = 220;
-export const REMIX_FX = ['reverb', 'muffle', 'bass', 'volume'];
+const REMIX_FX = ['reverb', 'muffle', 'bass', 'volume'];
 
 export const SPEED_PRESETS = [
   { id: 'superSlowed', name: 'Super slowed', speed: 0.75 },
@@ -56,11 +57,11 @@ const FADE = 0.015; // crossfade on restarts and stops
 const FADE_IN = 0.005;
 const ANCHOR_LEAD = 0.15; // beat re-alignments must land past the scheduler's look-ahead
 const STRETCH_DEBOUNCE_MS = 200;
-const STRETCH_CACHE = 2; // stretched copies kept per song (each is as big as the song)
 const MIN_CONFIDENCE = 0.1; // below this a detected tempo is not used
 const MIN_TAIL = 0.1; // s, covers the master chain look-ahead and the last fade
 const DECODE_RATE = 48000; // only when no AudioContext exists yet
 const MAX_PEAK_COLUMNS = 8192;
+const PEAK_BASE = 8192; // min/max columns scanned once per song; every width is reduced from these
 
 const BASS_HZ = 100;
 const BASS_MAX_DB = 9;
@@ -77,6 +78,80 @@ const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
 const disconnect = (n) => { try { n?.disconnect(); } catch { /* already gone */ } };
 
 export const clampSpeed = (x, fallback = 1) => round3(clampUnit(x, fallback, MIN_SPEED, MAX_SPEED));
+
+/**
+ * How many stretched copies to keep per song (each is as big as the song):
+ * 1 on low-memory or touch-only devices, 2 otherwise. Reads navigator and
+ * matchMedia unless they are passed in.
+ */
+export function stretchCacheLimit(env = {}) {
+  const memory = 'deviceMemory' in env ? env.deviceMemory : globalThis.navigator?.deviceMemory;
+  const media = 'matchMedia' in env ? env.matchMedia
+    : typeof globalThis.matchMedia === 'function' ? (q) => globalThis.matchMedia(q) : null;
+  if (Number.isFinite(memory) && memory <= 4) return 1;
+  try {
+    if (media?.('(pointer: coarse)')?.matches && media('(hover: none)')?.matches) return 1;
+  } catch { /* no media queries */ }
+  return 2;
+}
+
+// ---- waveform peaks ----
+
+function createPeakBase(buffer) {
+  const cols = Math.max(1, Math.min(PEAK_BASE, buffer.length));
+  const chans = [];
+  for (let c = 0; c < buffer.numberOfChannels; c++) chans.push(buffer.getChannelData(c));
+  return { length: buffer.length, cols, chans, min: new Float32Array(cols), max: new Float32Array(cols), done: 0 };
+}
+
+/** Scans base columns up to (not including) `upTo`. */
+function fillPeakBase(base, upTo) {
+  const { length: len, cols, chans, min, max } = base;
+  for (let i = base.done; i < upTo; i++) {
+    const a = Math.floor((i * len) / cols);
+    const b = Math.min(len, Math.max(a + 1, Math.floor(((i + 1) * len) / cols)));
+    let lo = Infinity, hi = -Infinity;
+    for (const d of chans) {
+      for (let j = a; j < b; j++) {
+        const x = d[j];
+        if (x < lo) lo = x;
+        if (x > hi) hi = x;
+      }
+    }
+    min[i] = lo === Infinity ? 0 : lo;
+    max[i] = hi === -Infinity ? 0 : hi;
+  }
+  if (upTo > base.done) base.done = upTo;
+  if (base.done >= cols) base.chans = null;
+}
+
+async function buildPeakBase(base, opts) {
+  const tick = makeYielder(opts, 'peaks-cancelled');
+  const step = 256;
+  while (base.done < base.cols) {
+    await tick();
+    fillPeakBase(base, Math.min(base.cols, base.done + step));
+  }
+}
+
+function reducePeaks(base, cols) {
+  if (base.done < base.cols) fillPeakBase(base, base.cols);
+  const min = new Float32Array(cols);
+  const max = new Float32Array(cols);
+  const n = base.cols;
+  for (let i = 0; i < cols; i++) {
+    const a = Math.floor((i * n) / cols);
+    const b = Math.max(a + 1, Math.floor(((i + 1) * n) / cols));
+    let lo = Infinity, hi = -Infinity;
+    for (let k = a; k < b && k < n; k++) {
+      if (base.min[k] < lo) lo = base.min[k];
+      if (base.max[k] > hi) hi = base.max[k];
+    }
+    min[i] = lo === Infinity ? 0 : lo;
+    max[i] = hi === -Infinity ? 0 : hi;
+  }
+  return { min, max };
+}
 
 export function normalizeRemix(src, base = DEFAULT_REMIX) {
   const s = isObject(src) ? src : {};
@@ -107,7 +182,7 @@ export function muffleHz(m, sampleRate) {
   return top * (MUFFLE_LOW_HZ / top) ** m;
 }
 
-export const remixTail = (s) => (s.reverb > 0 ? REVERB_SECONDS + REVERB_PREDELAY : 0);
+const remixTail = (s) => (s.reverb > 0 ? REVERB_SECONDS + REVERB_PREDELAY : 0);
 
 /**
  * input -> bass shelf -> muffle (dry at 0, crossfades into the low-pass) -> dry + reverb -> volume -> destination
@@ -241,7 +316,7 @@ function retireVoice(v, at) {
 }
 
 /** Source time the voice plays at context time t. */
-export function voicePosition(v, t) {
+function voicePosition(v, t) {
   let p = v.pos0 + Math.max(0, t - v.t0) * v.speed;
   const { start, end, enabled } = v.loop;
   if (enabled && p >= end) p = start + ((p - start) % (end - start));
@@ -320,14 +395,16 @@ async function toArrayBuffer(input) {
 /**
  * @param engine from createEngine()
  * @param [opts] OfflineAudioContext (constructor, for decoding before the AudioContext
- *   exists and for renders), detectBpm, timeStretch (injection points for tests)
+ *   exists and for renders), detectBpm, timeStretch (injection points for tests),
+ *   stretchCache (stretched copies kept per song; default from stretchCacheLimit())
  */
 export function createRemix(engine, opts = {}) {
   const Offline = () => opts.OfflineAudioContext || globalThis.OfflineAudioContext;
   const detect = opts.detectBpm || detectBpm;
   const stretch = opts.timeStretch || timeStretch;
+  const stretchCache = opts.stretchCache ?? stretchCacheLimit();
 
-  let song = null; // { buffer, name, id, peaks }
+  let song = null; // { buffer, name, id, peaks (base columns, see createPeakBase) }
   let songCount = 0;
   let loading = false;
   let loop = { start: 0, end: 0, enabled: true };
@@ -449,7 +526,12 @@ export function createRemix(engine, opts = {}) {
       let m = stretches.get(buffer);
       if (!m) stretches.set(buffer, (m = new Map()));
       m.set(speed, ab);
-      while (m.size > STRETCH_CACHE) m.delete(m.keys().next().value);
+      // never evict what the deck is about to play, or a take preview would make it stretch again
+      const keep = buffer === song?.buffer ? wantedStretch() : null;
+      for (const k of [...m.keys()]) {
+        if (m.size <= stretchCache) break;
+        if (k !== speed && k !== keep) m.delete(k);
+      }
       return ab;
     })().finally(() => {
       jobs.splice(jobs.indexOf(job), 1);
@@ -719,6 +801,11 @@ export function createRemix(engine, opts = {}) {
     }, 0);
   }
 
+  function startPeaks(s) {
+    buildPeakBase(s.peaks, { isCancelled: () => song !== s || s.peaks.done >= s.peaks.cols })
+      .catch(() => {});
+  }
+
   function clearSong() {
     stop();
     song = null;
@@ -732,7 +819,8 @@ export function createRemix(engine, opts = {}) {
 
   /**
    * Decodes and replaces the current song. Rejects Error('decode-failed' |
-   * 'too-long' | 'too-large' | 'busy' (loading, or locked by a take) | 'cancelled' (disposed)).
+   * 'too-long' (over MAX_SONG_SECONDS, 10 min) | 'too-large' (over MAX_FILE_BYTES, 200 MB) |
+   * 'busy' (loading, or locked by a take) | 'cancelled' (disposed)).
    */
   async function load(input, { name } = {}) {
     if (loading || locked) throw new Error('busy');
@@ -756,10 +844,11 @@ export function createRemix(engine, opts = {}) {
         buffer: decoded,
         name: String(name ?? input?.name ?? 'Untitled'),
         id: ++songCount,
-        peaks: new Map(),
+        peaks: createPeakBase(decoded),
       };
       loop = { start: 0, end: decoded.duration, enabled: true };
       startDetection(song);
+      startPeaks(song);
       scheduleStretch();
       emit();
       return info();
@@ -787,33 +876,7 @@ export function createRemix(engine, opts = {}) {
     const n = Math.floor(Number(columns));
     const cols = Number.isFinite(n) ? clamp(n, 1, MAX_PEAK_COLUMNS) : 1;
     if (!song) return { min: new Float32Array(0), max: new Float32Array(0) };
-    let hit = song.peaks.get(cols);
-    if (!hit) {
-      const buf = song.buffer;
-      const len = buf.length;
-      const chans = [];
-      for (let c = 0; c < buf.numberOfChannels; c++) chans.push(buf.getChannelData(c));
-      const min = new Float32Array(cols);
-      const max = new Float32Array(cols);
-      for (let i = 0; i < cols; i++) {
-        const a = Math.floor((i * len) / cols);
-        const b = Math.max(a + 1, Math.floor(((i + 1) * len) / cols));
-        let lo = Infinity, hi = -Infinity;
-        for (const d of chans) {
-          for (let j = a; j < b && j < len; j++) {
-            const x = d[j];
-            if (x < lo) lo = x;
-            if (x > hi) hi = x;
-          }
-        }
-        min[i] = lo === Infinity ? 0 : lo;
-        max[i] = hi === -Infinity ? 0 : hi;
-      }
-      hit = { min, max };
-      if (song.peaks.size >= 4) song.peaks.delete(song.peaks.keys().next().value);
-      song.peaks.set(cols, hit);
-    }
-    return { min: hit.min.slice(), max: hit.max.slice() };
+    return reducePeaks(song.peaks, cols);
   }
 
   // ---- snapshots (takes recorded over the deck) and offline renders ----

@@ -10,7 +10,9 @@ import {
   measureVoiceDelay, voiceTail,
 } from './voice.js';
 
-export const BAR_CHOICES = [2, 4, 8, 16];
+const BAR_CHOICES = [2, 4, 8, 16];
+/** Takes kept at once; record() and importTake() reject with 'too-many-takes' past this. */
+export const MAX_TAKES = 12;
 export const MIN_LATENCY_OFFSET = -200;
 export const MAX_LATENCY_OFFSET = 200;
 export { encodeWav } from './wav.js';
@@ -436,8 +438,14 @@ export function createBooth(engine, opts = {}) {
     return true;
   }
 
+  /**
+   * Records one take of `bars` bars. Resolves with the take's meta, or null when
+   * cancelled. Rejects Error('busy' | 'mic-closed' | 'too-many-takes'
+   * (MAX_TAKES kept: delete one first)).
+   */
   async function record() {
     if (rec) throw new Error('busy');
+    if (takes.length >= MAX_TAKES) throw new Error('too-many-takes');
     if (!mic) throw new Error('mic-closed');
     const snap = backing === 'remix' ? remixSnapshot() : null;
     stopPreview();
@@ -632,6 +640,8 @@ export function createBooth(engine, opts = {}) {
    * compensation). Uses the current device latency estimate.
    */
   function importTake(samples, { bpm, bars: n = bars, sampleRate } = {}) {
+    if (rec) throw new Error('busy');
+    if (takes.length >= MAX_TAKES) throw new Error('too-many-takes');
     const snap = backing === 'remix' ? remixSnapshot() : null;
     const tempo = bpm ?? (snap ? snap.bpm : engine.clock.bpm);
     const sr = sampleRate || engine.context?.sampleRate || 48000;
@@ -914,6 +924,8 @@ export function createBooth(engine, opts = {}) {
     getRecordProgress,
 
     get takes() { return takes.map(metaOf); },
+    /** true when MAX_TAKES are kept and record() would reject 'too-many-takes' */
+    get takesFull() { return takes.length >= MAX_TAKES; },
     get selectedTakeId() { return selectedId; },
     selectTake,
     deleteTake,

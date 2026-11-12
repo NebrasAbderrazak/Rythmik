@@ -2,7 +2,7 @@
 // which starts PRE_ROLL seconds before bar 1 and runs POST_ROLL past the last
 // bar, so any latency in [-PRE_ROLL, POST_ROLL] can be applied later.
 import { STEPS, secondsPerStep } from './constants.js';
-import { renderPatternOffline } from './offline.js';
+import { renderPatternOffline, measureImpulseDelay } from './offline.js';
 import { createMasterChain } from './sequence.js';
 import { normalizePattern } from './pattern.js';
 import { fxTail } from './fx.js';
@@ -185,32 +185,11 @@ export async function renderProcessedVocal(take, latencyMs, opts = {}) {
   return buf;
 }
 
-const chainDelays = new Map();
-
 /**
  * Signal delay of the master chain in seconds (compressor look-ahead), measured
  * with a low-level impulse so no gain reduction kicks in.
  */
-export function measureChainDelay(sampleRate, Ctor = globalThis.OfflineAudioContext) {
-  if (!Ctor) return Promise.resolve(null);
-  let p = chainDelays.get(sampleRate);
-  if (!p) {
-    p = (async () => {
-      const len = Math.round(sampleRate * 0.1);
-      const ctx = new Ctor(1, len, sampleRate);
-      const chain = createMasterChain(ctx);
-      const imp = ctx.createBuffer(1, 1, sampleRate);
-      imp.getChannelData(0)[0] = 0.05;
-      const src = ctx.createBufferSource();
-      src.buffer = imp;
-      src.connect(chain.master);
-      src.start(0);
-      const out = (await ctx.startRendering()).getChannelData(0);
-      let at = 0;
-      for (let i = 1; i < out.length; i++) if (Math.abs(out[i]) > Math.abs(out[at])) at = i;
-      return at / sampleRate;
-    })().catch(() => null);
-    chainDelays.set(sampleRate, p);
-  }
-  return p;
+export async function measureChainDelay(sampleRate, Ctor = globalThis.OfflineAudioContext) {
+  const at = await measureImpulseDelay('master', sampleRate, Ctor, (ctx) => createMasterChain(ctx).master);
+  return at == null ? null : at / sampleRate;
 }

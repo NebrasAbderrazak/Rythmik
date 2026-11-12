@@ -4,7 +4,7 @@ import { createEngine } from '../src/audio/engine.js';
 import { createBooth } from '../src/audio/booth.js';
 import {
   createRemix, createDeckChain, gridSteps, beatTempo, muffleHz, normalizeRemix,
-  SPEED_PRESETS, REMIX_PRESETS, MIN_SPEED, MAX_SPEED, DEFAULT_REMIX,
+  SPEED_PRESETS, REMIX_PRESETS, MIN_SPEED, MAX_SPEED, DEFAULT_REMIX, MAX_SONG_SECONDS, stretchCacheLimit,
 } from '../src/audio/remix.js';
 import { detectBpm, createTapTempo } from '../src/audio/tempo.js';
 import { timeStretch } from '../src/audio/stretch.js';
@@ -150,9 +150,10 @@ describe('load', () => {
     expect(remix.info.duration).toBe(1);
   });
 
-  it("rejects songs over 15 minutes with 'too-long'", async () => {
+  it("rejects songs over 10 minutes with 'too-long'", async () => {
+    expect(MAX_SONG_SECONDS).toBe(600);
     const engine = offlineEngine();
-    const long = { duration: 15 * 60 + 1, length: 10, sampleRate: SR, numberOfChannels: 1 };
+    const long = { duration: 10 * 60 + 1, length: 10, sampleRate: SR, numberOfChannels: 1 };
     engine.context.decodeAudioData = async () => long;
     const remix = createRemix(engine, { detectBpm: noDetect });
     await expect(remix.load(new ArrayBuffer(8))).rejects.toThrow('too-long');
@@ -218,6 +219,49 @@ describe('load', () => {
     expect(remix.getPeaks('x').max.length).toBe(1);
     expect(remix.getPeaks(1e9).max.length).toBe(8192);
     expect(remix.getPeaks(3.7).max.length).toBe(3);
+  });
+
+  it('getPeaks matches an exact scan at any width', async () => {
+    // 30 s stereo, so one peak column covers many samples
+    let seed = 11;
+    const rnd = () => ((seed = (seed * 16807) % 2147483647) / 2147483647) * 2 - 1;
+    const buf = makeBuffer(30, (t, c) => (0.2 + 0.7 * Math.abs(Math.sin(t * (c ? 0.9 : 0.4)))) * rnd(), 2);
+    const { remix } = await loadedRemix(buf);
+    const chans = [buf.getChannelData(0), buf.getChannelData(1)];
+    const exact = (cols) => {
+      const len = buf.length;
+      const min = new Float32Array(cols), max = new Float32Array(cols);
+      for (let i = 0; i < cols; i++) {
+        const a = Math.floor((i * len) / cols);
+        const b = Math.max(a + 1, Math.floor(((i + 1) * len) / cols));
+        let lo = Infinity, hi = -Infinity;
+        for (const d of chans) for (let j = a; j < b; j++) { lo = Math.min(lo, d[j]); hi = Math.max(hi, d[j]); }
+        min[i] = lo; max[i] = hi;
+      }
+      return { min, max };
+    };
+    for (const cols of [1, 7, 300, 1234, 8192]) {
+      const got = remix.getPeaks(cols);
+      const want = exact(cols);
+      let err = 0;
+      for (let i = 0; i < cols; i++) {
+        err = Math.max(err, Math.abs(got.min[i] - want.min[i]), Math.abs(got.max[i] - want.max[i]));
+      }
+      expect(err, `${cols} columns`).toBeLessThan(0.05);
+    }
+  });
+
+  it('getPeaks on a song shorter than 8192 samples is exact', async () => {
+    const buf = makeBuffer(100 / SR, (t, c, i) => (i % 7) / 10 - 0.3);
+    const { remix } = await loadedRemix(buf);
+    const { min, max } = remix.getPeaks(250);
+    expect(min.length).toBe(250);
+    const d = buf.getChannelData(0);
+    for (let i = 0; i < 250; i++) {
+      const a = Math.floor((i * 100) / 250);
+      expect(min[i]).toBeCloseTo(d[a], 4);
+      expect(max[i]).toBeCloseTo(d[a], 4);
+    }
   });
 });
 
@@ -1003,7 +1047,7 @@ describe('stretch memory and waiting', () => {
       await gate;
       return o.output;
     });
-    const { remix } = await loadedRemix(makeBuffer(1, sine(220)), { timeStretch: spy });
+    const { remix } = await loadedRemix(makeBuffer(1, sine(220)), { timeStretch: spy, stretchCache: 2 });
     remix.setKeepPitch(true);
     for (const speed of [0.8, 0.9, 0.7]) {
       remix.setSpeed(speed);
@@ -1026,6 +1070,28 @@ describe('stretch memory and waiting', () => {
     await new Promise((r) => setTimeout(r, 300)); // the live debounce for 0.8 finds it cached
     expect(spy).toHaveBeenCalledTimes(4);
     expect(remix.stretchBusy).toBe(false);
+  });
+
+  it('keeps one speed per song when the device is short on memory', async () => {
+    const spy = vi.fn(async (chans, sr, speed, o) => o.output);
+    const { remix } = await loadedRemix(makeBuffer(1, sine(220)), { timeStretch: spy, stretchCache: 1 });
+    remix.setKeepPitch(true);
+    for (const speed of [0.8, 0.9, 0.8]) {
+      remix.setSpeed(speed);
+      await remix.render();
+    }
+    expect(spy).toHaveBeenCalledTimes(3);
+  });
+
+  it('stretchCacheLimit: 1 on low memory or touch-only devices, else 2', () => {
+    const media = (coarse, noHover) => (q) => ({ matches: q.includes('pointer') ? coarse : noHover });
+    expect(stretchCacheLimit({ deviceMemory: 8, matchMedia: media(false, false) })).toBe(2);
+    expect(stretchCacheLimit({ deviceMemory: 4, matchMedia: media(false, false) })).toBe(1);
+    expect(stretchCacheLimit({ deviceMemory: 2, matchMedia: null })).toBe(1);
+    expect(stretchCacheLimit({ deviceMemory: undefined, matchMedia: media(true, true) })).toBe(1);
+    expect(stretchCacheLimit({ deviceMemory: 8, matchMedia: media(true, false) })).toBe(2); // touch laptop
+    expect(stretchCacheLimit({ deviceMemory: undefined, matchMedia: null })).toBe(2);
+    expect(stretchCacheLimit({ deviceMemory: 8, matchMedia: () => { throw new Error('x'); } })).toBe(2);
   });
 
   it('play() with keep pitch waits for the stretch and never plays the plain sound', async () => {

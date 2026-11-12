@@ -49,3 +49,34 @@ export async function renderPatternOffline(pattern, opts = {}) {
   if (opts.setup) await opts.setup(ctx, bus);
   return ctx.startRendering();
 }
+
+const impulseDelays = new Map();
+
+/**
+ * Where a short impulse peaks after passing through a chain, in whole samples.
+ * Cached per chain name and sample rate; resolves null if rendering fails.
+ * build(ctx) returns the chain's input node, already wired to ctx.destination.
+ */
+export function measureImpulseDelay(name, sampleRate, Ctor, build, level = 0.05) {
+  if (!Ctor) return Promise.resolve(null);
+  const key = `${name}@${sampleRate}`;
+  let p = impulseDelays.get(key);
+  if (!p) {
+    p = (async () => {
+      const ctx = new Ctor(1, Math.round(sampleRate * 0.1), sampleRate);
+      const input = build(ctx);
+      const imp = ctx.createBuffer(1, 1, sampleRate);
+      imp.getChannelData(0)[0] = level;
+      const src = ctx.createBufferSource();
+      src.buffer = imp;
+      src.connect(input);
+      src.start(0);
+      const out = (await ctx.startRendering()).getChannelData(0);
+      let at = 0;
+      for (let i = 1; i < out.length; i++) if (Math.abs(out[i]) > Math.abs(out[at])) at = i;
+      return at;
+    })().catch(() => null);
+    impulseDelays.set(key, p);
+  }
+  return p;
+}

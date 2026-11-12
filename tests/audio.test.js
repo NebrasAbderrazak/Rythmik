@@ -60,7 +60,6 @@ describe('preset renders', () => {
     it(`${name} is audible and does not clip`, async () => {
       const buf = await render(pattern);
       const s = stats(buf);
-      console.log(`[${name} @${pattern.bpm} swing ${pattern.swing}] peak ${s.peak.toFixed(4)} (${s.peakDb.toFixed(2)} dBFS), RMS ${s.rmsDb.toFixed(2)} dBFS`);
       expect(s.rms).toBeGreaterThan(0.02);
       expect(s.peak).toBeLessThan(1.0);
       for (let c = 0; c < buf.numberOfChannels; c++) {
@@ -87,7 +86,6 @@ describe('voices', () => {
   for (const { id } of TRACKS) {
     it(`${id} is audible on its own`, async () => {
       const s = stats(await render({ steps: { [id]: on(0, 4, 8, 12) } }, { bars: 1 }));
-      console.log(`[voice ${id}] peak ${s.peakDb.toFixed(2)} dBFS, RMS ${s.rmsDb.toFixed(2)} dBFS`);
       expect(s.rms).toBeGreaterThan(0.001);
       expect(s.peak).toBeLessThan(1.0);
     });
@@ -133,7 +131,6 @@ describe('mixer and swing', () => {
         const want = i % 2 ? expectedMs : 0;
         expect(Math.abs(shiftMs - want)).toBeLessThan(0.5);
       }
-      console.log(`[swing ${swing}] odd 16ths +${expectedMs.toFixed(1)} ms at ${bpm} BPM`);
     }
   });
 
@@ -189,14 +186,12 @@ describe('mixer and swing', () => {
       return onsets.map((o, i) => ((o - expected[i]) / SR) * 1000);
     };
     const dry = await onsetErrorsMs(false);
-    console.log(`[kick timing, dry] max error ${Math.max(...dry.map(Math.abs)).toFixed(3)} ms`);
     for (const e of dry) expect(Math.abs(e)).toBeLessThan(2);
 
     // the compressors add a fixed delay
     const wet = await onsetErrorsMs(true);
     const latency = wet[0];
     const jitter = Math.max(...wet.map((e) => Math.abs(e - latency)));
-    console.log(`[kick timing, master chain] latency ${latency.toFixed(3)} ms, jitter ${jitter.toFixed(3)} ms`);
     expect(latency).toBeGreaterThanOrEqual(-2);
     expect(latency).toBeLessThan(30);
     expect(jitter).toBeLessThan(2);
@@ -489,14 +484,12 @@ describe('headroom, timing, slides', () => {
       hot.master = 1;
       for (const ch of Object.values(hot.mixer)) ch.volume = 1;
       const s = stats(await render(hot));
-      console.log(`[${name} all faders 1.0] peak ${s.peak.toFixed(4)} (${s.peakDb.toFixed(2)} dBFS), RMS ${s.rmsDb.toFixed(2)} dBFS`);
       expect(s.peak).toBeLessThan(1.0);
     }
     const steps = {};
     const mixer = {};
     for (const { id } of TRACKS) { steps[id] = new Array(16).fill(true); mixer[id] = { volume: 1 }; }
     const s = stats(await render({ bpm: 180, master: 1, steps, mixer }));
-    console.log(`[worst case all on, all 1.0] peak ${s.peak.toFixed(4)} (${s.peakDb.toFixed(2)} dBFS)`);
     expect(s.peak).toBeLessThan(1.0);
   }, 30000);
 
@@ -523,7 +516,6 @@ describe('headroom, timing, slides', () => {
       const wet = await errorsMs(true);
       const latency = Math.min(...wet);
       const jitter = Math.max(...wet) - latency;
-      console.log(`[onset ${id}] dry max ${Math.max(...dry).toFixed(3)} ms; master chain latency ${latency.toFixed(2)} ms, jitter ${jitter.toFixed(3)} ms`);
       expect(latency, id).toBeLessThan(30);
       expect(jitter, id).toBeLessThan(2);
     }

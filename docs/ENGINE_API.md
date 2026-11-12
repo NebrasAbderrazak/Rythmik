@@ -46,19 +46,26 @@ engine.onStateChange(cb)                // cb({ isPlaying, bpm })
 engine.onPatternChange(cb)              // cb(patternCopy) after ANY pattern/control change (used for autosave)
 ```
 
-## Pattern shape (version 2)
+## Pattern shape (version 3)
 ```js
 {
-  version: 2,
+  version: 3,
   bpm: 104,
   swing: 0,                       // 0..0.6
   master: 0.8,                    // 0..1
   steps:     { [trackId]: bool[16] },     // all 8 tracks
   bassNotes: number[16],                  // MIDI per step, each from BASS_NOTES
-  mixer:     { [trackId]: { volume: 0..1, mute: bool, solo: bool } }
+  mixer:     { [trackId]: { volume: 0..1, mute: bool, solo: bool } },
+  fx: {                                   // beat effects, see "Effects" below
+    reverb: 0, echo: 0,                   // 0..1
+    echoTime: '1/8',                      // '1/8' | '3/16' | '1/4'
+    filter: 0,                            // -1..1 (< 0 low-pass, > 0 high-pass)
+    drive: 0,                             // 0..1
+    sends: { [trackId]: { reverb: 0..1, echo: 0..1 } }
+  }
 }
 ```
-`normalizePattern(any)` fills missing tracks/fields with defaults, clamps values, also accepts older version 1 patterns (4 tracks, no version field).
+`normalizePattern(any)` fills missing tracks/fields with defaults, clamps values, also accepts older patterns: version 1 (4 tracks, no version field) and version 2 (no `fx`, loads with effects off).
 `serializePattern(p)` returns pretty JSON text. `parsePattern(text)` returns a normalized pattern or throws `Error` with a short human-readable message ("Not a Rythmik pattern file.").
 
 ## Rap booth
@@ -83,12 +90,14 @@ booth.setBars(n)                         // take length: 2 | 4 | 8 | 16 bars (de
 booth.setCountIn(bool)                   // 1-bar count-in click before recording, default true
 await booth.record()                     // starts the beat if needed, counts in, records exactly `bars` bars
                                          // aligned to bar 1 of the pattern; resolves with the new take
+                                         // rejects Error('too-many-takes') when MAX_TAKES (12) are kept
 booth.cancel()                           // stop recording without keeping a take
 booth.state                              // 'idle' | 'count-in' | 'recording'
 booth.getRecordProgress()                // { bar, totalBars, countIn: bool } while recording
 
 // takes (kept in memory)
 booth.takes                              // [{ id, name: 'Take 1', bars, bpm, duration, peak, createdAt }]
+booth.takesFull                          // true when MAX_TAKES (12, exported from booth.js) are kept
 booth.selectedTakeId                     // take used in the mix (newest take by default)
 booth.selectTake(id)
 booth.deleteTake(id)
@@ -148,7 +157,8 @@ engine.setBarAnchors([{ at, period? }] | null)  // step 0 lands exactly on these
 ```
 
 `record()` resolves with `null` when cancelled (including when the beat is stopped mid-take) and rejects with
-`Error('mic-closed')` or `Error('busy')`. Each take keeps 250 ms of audio before bar 1 and 600 ms after the
+`Error('mic-closed')`, `Error('busy')` or `Error('too-many-takes')` (12 takes kept: the user deletes one first;
+`importTake` throws the same). Each take keeps 250 ms of audio before bar 1 and 600 ms after the
 last bar, so latency changes can re-align existing takes.
 
 Each take stores the latency estimate from when it was recorded (`take.autoLatencyMs`); only the manual
@@ -188,8 +198,8 @@ booth.voiceBusy                          // true while tuning
 // playTake, renderMix use the processed voice; renderVocal(takeId, { processed: true }) for the tuned vocal
 ```
 - `onChange` fires on voice changes and when tuning starts/finishes (`voiceBusy` flips).
-- Tuning starts ~150 ms after the last tune/retune/key/scale change (knob drags do not restart it on every
-  step); `voiceBusy` is already true during that wait. The pitch track is kept per take, so these changes only
+- Tuning starts 150 ms (engine debounce) after the last tune/retune/key/scale change, so knob drags do not
+  restart it on every step; the UI adds its own debounce on top. `voiceBusy` is already true during that wait. The pitch track is kept per take, so these changes only
   redo the correction. `booth.voiceCacheSize` = takes with a tuned result in memory.
 - Tone, reverb and echo follow live during a preview; tune/retune/key/scale apply from the next `playTake`
   (which waits for tuning, so the first play after a change can take about a second).
@@ -206,18 +216,21 @@ The deck plays into `engine.master`, so it shares the master chain with the beat
 import { createRemix, SPEED_PRESETS, REMIX_PRESETS, MIN_SPEED, MAX_SPEED } from './audio/remix.js';
 import { detectBpm, createTapTempo } from './audio/tempo.js';
 
-const remix = createRemix(engine);       // optional: createRemix(engine, { OfflineAudioContext })
+const remix = createRemix(engine);       // optional: createRemix(engine, { OfflineAudioContext, stretchCache })
 
 // file
 await remix.load(fileOrArrayBuffer, { name })  // decodes; resolves with remix.info. Rejects Error('decode-failed' |
-                                              // 'too-long' (> 15 min) | 'too-large' (file > 200 MB, checked before
+                                              // 'too-long' (> 10 min, MAX_SONG_SECONDS) | 'too-large' (file > 200 MB,
+                                              // MAX_FILE_BYTES, checked before
                                               // reading) | 'busy' (already loading, or locked) | 'cancelled' (disposed)).
                                               // Replaces the current song.
 remix.loaded                                  // boolean
 remix.info                                    // { name, duration, sampleRate, channels } or null
 remix.unload()                                // throws Error('busy') while locked
 remix.getPeaks(columns)                       // { min: Float32Array, max: Float32Array } per column, source time, for a
-                                              // waveform; columns is made a whole number in 1..8192
+                                              // waveform; columns is made a whole number in 1..8192. Built from
+                                              // 8192 min/max columns scanned once per song (on first use),
+                                              // so any width is cheap
 
 // transport (source time = seconds in the original file)
 remix.play({ from, at })                      // from defaults to the loop start (or 0 when the loop is off);
@@ -248,7 +261,8 @@ remix.setFx(name, value)                      // returns the applied value
 //   'bass'    0..1  low shelf (100 Hz) up to +9 dB, with the deck level 3 dB lower at full: lows +6 dB net, rest -3 dB
 //   'volume'  0..1  deck level (0.8 = unity, same curve as track faders, after a fixed -3 dB trim for headroom)
 REMIX_PRESETS                                 // { original, slowedReverb, nightcore }: each { name, settings }
-remix.applyPreset(id)                         // "Slowed + reverb" = speed 0.85, reverb ~0.5, muffle a little
+remix.applyPreset(id)                         // "Slowed + reverb" = speed 0.85, reverb ~0.5, muffle a little;
+                                              // "Nightcore" = speed 1.25 (pitch up), a touch of reverb
 remix.settings                                // { speed, keepPitch, reverb, muffle, bass, volume, beatSync } (copy)
 remix.setSettings(partial)                    // for restoring saved settings
 
@@ -282,8 +296,9 @@ remix.dispose()
 - Song detection runs once after `load` resolves; a song only gets `sourceBpm` when confidence is at least 0.1.
   `setSourceBpm` wins over a detection still running.
 - Keep pitch: phase vocoder with phase locking, both channels in sync. Starts 200 ms after the last speed change,
-  about 7 s for a 4-minute song at 0.85x on a mid-range laptop; up to 2 speeds kept per song (each copy is as
-  big as the song). Files with more than 2 channels are folded to stereo for the stretch.
+  about 7 s for a 4-minute song at 0.85x on a mid-range laptop. Up to 2 speeds kept per song (each copy is as
+  big as the song), 1 on devices with `navigator.deviceMemory <= 4` or touch-only devices (coarse pointer, no
+  hover); `stretchCacheLimit()` gives the default, `createRemix(engine, { stretchCache })` overrides it. Files with more than 2 channels are folded to stereo for the stretch.
 - `render` also takes `sampleRate` and `OfflineAudioContext`. Rejects `Error('no-song')` without a song.
 - Used by the booth: `remix.snapshot()` (throws `no-remix` / `no-bpm`), `prepareSnapshot(snap)`,
   `playSnapshot(snap, { at, duration })` (resolves `{ startTime, stop(ringOut) }`), `renderSnapshot(snap, opts)`,

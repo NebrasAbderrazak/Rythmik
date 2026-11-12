@@ -1,6 +1,8 @@
 // Voice effects: offline pitch correction (YIN + TD-PSOLA) and the realtime
 // voice chain (tone, reverb, echo) used for preview and, offline, for export.
 import { clampUnit } from './constants.js';
+import { makeYielder } from './work.js';
+import { measureImpulseDelay } from './offline.js';
 import { createReverb, createEcho, echoSeconds, glide, REVERB_SECONDS, REVERB_PREDELAY, ECHO_FEEDBACK } from './fx.js';
 
 export const KEYS = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
@@ -52,7 +54,7 @@ export function normalizeVoice(src, base = DEFAULT_VOICE) {
 /** Settings that change the tuned samples (the rest is realtime). */
 export const tuningKey = (v) => (v.tune > 0 ? `${v.tune}|${v.retune}|${v.key}|${v.scale}` : 'off');
 
-export const VOICE_ECHO = '3/16';
+const VOICE_ECHO = '3/16';
 
 export function voiceTail(v, bpm) {
   let tail = 0;
@@ -73,22 +75,6 @@ const HOP = 0.005;
 const YIN_THRESHOLD = 0.15;
 const GATE = 0.03; // frames more than ~30 dB below the loudest are unvoiced
 const MIN_RUN = 3; // frames
-const SLICE_MS = 20;
-
-const defaultYield = () => new Promise((r) => setTimeout(r, 0));
-
-function makeYielder(opts) {
-  const yieldFn = opts.yield || defaultYield;
-  const now = () => globalThis.performance?.now() ?? Date.now();
-  let last = now();
-  return async () => {
-    if (opts.isCancelled?.()) throw new Error('voice-cancelled');
-    if (now() - last < SLICE_MS) return;
-    await yieldFn();
-    if (opts.isCancelled?.()) throw new Error('voice-cancelled');
-    last = now();
-  };
-}
 
 /**
  * Lowpass (two cascaded biquads, 4th order) and keep every D-th sample, in one
@@ -132,7 +118,7 @@ function parabolicMin(d, i) {
  * @returns {Promise<{ f0: Float32Array, hop: number }>}
  */
 export async function detectPitch(x, sampleRate, opts = {}) {
-  const tick = makeYielder(opts);
+  const tick = makeYielder(opts, 'voice-cancelled');
   const D = Math.max(1, Math.round(sampleRate / 11025));
   const srd = sampleRate / D;
   const y = await decimate(x, sampleRate, D, srd * 0.4, tick);
@@ -327,7 +313,7 @@ export async function correctPitch(x, sampleRate, settings, opts = {}) {
   const v = normalizeVoice(settings);
   const out = Float32Array.from(x);
   if (!(v.tune > 0) || x.length < 2) return out;
-  const tick = makeYielder(opts);
+  const tick = makeYielder(opts, 'voice-cancelled');
   const { f0, hop } = opts.pitch || await detectPitch(x, sampleRate, opts);
   const ratio = correctionRatios(f0, hop / sampleRate, v);
   const fade = Math.round(FADE * sampleRate);
@@ -538,33 +524,15 @@ export function vocalGain(peak) {
   return Math.min(VOCAL_MAX_BOOST, VOCAL_TARGET_PEAK / peak);
 }
 
-const chainDelays = new Map();
-
 /**
  * Signal delay of the voice chain in whole samples (compressor look-ahead).
  * Preview starts the voice this much early; offline renders trim it.
  */
-export function measureVoiceDelay(sampleRate, Ctor = globalThis.OfflineAudioContext) {
-  if (!Ctor) return Promise.resolve(0);
-  let p = chainDelays.get(sampleRate);
-  if (!p) {
-    p = (async () => {
-      const len = Math.round(sampleRate * 0.1);
-      const ctx = new Ctor(1, len, sampleRate);
-      const comp = ctx.createDynamicsCompressor();
-      comp.connect(ctx.destination);
-      const imp = ctx.createBuffer(1, 1, sampleRate);
-      imp.getChannelData(0)[0] = 0.01;
-      const src = ctx.createBufferSource();
-      src.buffer = imp;
-      src.connect(comp);
-      src.start(0);
-      const out = (await ctx.startRendering()).getChannelData(0);
-      let at = 0;
-      for (let i = 1; i < out.length; i++) if (Math.abs(out[i]) > Math.abs(out[at])) at = i;
-      return at;
-    })().catch(() => 0);
-    chainDelays.set(sampleRate, p);
-  }
-  return p;
+export async function measureVoiceDelay(sampleRate, Ctor = globalThis.OfflineAudioContext) {
+  const at = await measureImpulseDelay('voice', sampleRate, Ctor, (ctx) => {
+    const comp = ctx.createDynamicsCompressor();
+    comp.connect(ctx.destination);
+    return comp;
+  }, 0.01);
+  return at ?? 0;
 }

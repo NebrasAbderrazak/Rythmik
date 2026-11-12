@@ -219,7 +219,6 @@ describe('beat effects change the sound', () => {
       for (let i = 1; i < d.length; i++) m = Math.max(m, Math.abs(d[i] - d[i - 1]));
       return m;
     };
-    console.log(`[filter sweep] max step in ${step(x).toFixed(4)}, out ${step(y).toFixed(4)}`);
     expect(step(y)).toBeLessThan(step(x) * 1.5);
   });
 
@@ -262,7 +261,6 @@ describe('beat effects change the sound', () => {
       const d = b.getChannelData(0).subarray(Math.round(0.1 * SR), Math.round(0.3 * SR));
       return goertzel(d, 165, SR) / goertzel(d, 55, SR);
     };
-    console.log(`[drive] 3rd harmonic clean ${third(clean).toFixed(4)}, driven ${third(driven).toFixed(4)}`);
     // the 808 has a little grit of its own
     expect(third(driven)).toBeGreaterThan(third(clean) * 2);
     expect(peak(driven)).toBeLessThan(peak(clean) * 1.3);
@@ -302,7 +300,6 @@ describe('beat effects change the sound', () => {
       const fx = { reverb: 1, echo: 1, echoTime: '3/16', filter, drive: 1, sends };
       const buf = await render({ bpm: 180, master: 1, steps, mixer, fx }, { bars: 2, tail: 1 });
       const pk = peak(buf);
-      console.log(`[all fx max, filter ${filter}] peak ${pk.toFixed(4)}`);
       expect(pk).toBeLessThan(1);
       expect(pk).toBeGreaterThan(0.05);
     }

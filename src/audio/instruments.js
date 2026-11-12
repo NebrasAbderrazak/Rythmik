@@ -365,5 +365,3 @@ export function bass(ctx, destination, time, opts = {}) {
   };
   return voice;
 }
-
-export const INSTRUMENTS = { kick, snare, clap, hat, openhat, rim, shaker, bass };

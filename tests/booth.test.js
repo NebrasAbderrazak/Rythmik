@@ -3,7 +3,7 @@ import {
   OfflineAudioContext, AudioContext, AudioWorkletNode,
 } from 'node-web-audio-api';
 import { createEngine } from '../src/audio/engine.js';
-import { createBooth, mapMicError, listInputDevices } from '../src/audio/booth.js';
+import { createBooth, mapMicError, listInputDevices, MAX_TAKES } from '../src/audio/booth.js';
 import { createCapture } from '../src/audio/capture.js';
 import {
   measureChainDelay, makeTake, vocalGain, PRE_ROLL,
@@ -68,6 +68,20 @@ async function settledLatency(booth, sr) {
 }
 
 describe('takes', () => {
+  it('keeps at most 12 takes; record() and importTake() reject when full', async () => {
+    const { booth } = offlineBooth();
+    const opts = { bpm: 120, bars: 2, sampleRate: SR };
+    expect(MAX_TAKES).toBe(12);
+    for (let i = 0; i < MAX_TAKES; i++) booth.importTake(new Float32Array(10), opts);
+    expect(booth.takesFull).toBe(true);
+    expect(() => booth.importTake(new Float32Array(10), opts)).toThrow('too-many-takes');
+    await expect(booth.record()).rejects.toThrow('too-many-takes');
+    expect(booth.state).toBe('idle');
+    booth.deleteTake(booth.takes[0].id);
+    expect(booth.takesFull).toBe(false);
+    expect(booth.takes.length).toBe(MAX_TAKES - 1);
+  });
+
   it('names, selects newest, selectTake and deleteTake', () => {
     const { booth } = offlineBooth();
     const changes = vi.fn();
@@ -161,7 +175,6 @@ describe('renderMix', () => {
     booth.importTake(samples, { bpm, bars: 2, sampleRate: SR });
     const mix = await booth.renderMix();
     const p = peak(mix);
-    console.log(`[mix] peak ${p.toFixed(4)} (${(20 * Math.log10(p)).toFixed(2)} dBFS)`);
     expect(mix.numberOfChannels).toBe(2);
     expect(mix.sampleRate).toBe(SR);
     // afro bass has reverb: the tail grows to cover it
