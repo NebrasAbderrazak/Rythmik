@@ -162,3 +162,6 @@ docs/        Engine API reference
 3. Effects, including a robot-autotune voice (done)
 4. Remix deck: slow down, add reverb and rap over your own tracks (done)
 5. Polish and ship (done)
+
+## License
+MIT, see [LICENSE](LICENSE).

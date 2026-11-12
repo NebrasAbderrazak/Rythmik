@@ -3,6 +3,7 @@
   "private": true,
   "version": "1.0.0",
   "description": "Browser beat maker with a rap booth and a remix deck, built on the Web Audio API",
+  "license": "MIT",
   "type": "module",
   "repository": {
     "type": "git",
