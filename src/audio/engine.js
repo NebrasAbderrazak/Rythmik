@@ -18,6 +18,8 @@ export function createEngine(options = {}) {
   let mixer = null;
   let pattern = emptyPattern();
   let playing = false;
+  let starting = null;
+  let tempoOverride = null;
   // separate voice state for auditions so they never choke sequenced voices
   let voices = createVoiceState();
   const auditionVoices = createVoiceState();
@@ -48,7 +50,7 @@ export function createEngine(options = {}) {
 
   const scheduler = new Scheduler({
     getContext: () => context,
-    getSecondsPerStep: () => secondsPerStep(pattern.bpm),
+    getSecondsPerStep: () => secondsPerStep(tempoOverride ?? pattern.bpm),
     getStepOffset: (step, spb) => swingOffset(step, pattern.swing, spb),
     steps: STEPS,
     onStep: (step, time) => playStep(context, mixer.inputs, pattern, step, time, voices),
@@ -67,18 +69,25 @@ export function createEngine(options = {}) {
     return context;
   }
 
-  async function start() {
-    if (playing) return;
+  /**
+   * opts.at: context time for step 0 (e.g. a bar after a count-in).
+   * While a start is in progress, further calls return the same promise.
+   */
+  function start(opts = {}) {
+    if (playing) return starting || Promise.resolve();
     playing = true; // set early so double clicks don't double-start
-    try {
-      await resume();
-    } catch (e) {
-      playing = false;
-      throw e;
-    }
-    if (!playing) return; // stop() called while resuming
-    scheduler.start();
-    emitState();
+    starting = (async () => {
+      try {
+        await resume();
+      } catch (e) {
+        playing = false;
+        throw e;
+      }
+      if (!playing) return; // stop() called while resuming
+      scheduler.start(0.06, opts?.at ?? null);
+      emitState();
+    })().finally(() => { starting = null; });
+    return starting;
   }
 
   function stop() {
@@ -150,7 +159,7 @@ export function createEngine(options = {}) {
   const clock = {
     get bpm() { return pattern.bpm; },
     setBpm,
-    get secondsPerStep() { return secondsPerStep(pattern.bpm); },
+    get secondsPerStep() { return secondsPerStep(tempoOverride ?? pattern.bpm); },
     get swing() { return pattern.swing; },
     get isPlaying() { return playing; },
   };
@@ -213,6 +222,18 @@ export function createEngine(options = {}) {
     setMasterVolume,
 
     getCurrentStep() { return playing ? scheduler.getCurrentStep() : -1; },
+    /** Context time of the next pattern downbeat at or after minTime; null when stopped. */
+    getNextBarTime(minTime = context ? context.currentTime : 0) {
+      return playing && scheduler.running ? scheduler.getNextBarTime(minTime) : null;
+    },
+    /** No steps at or after this context time until the next start(); null clears. */
+    setEndTime(time) {
+      scheduler.endTime = Number.isFinite(time) ? time : Infinity;
+    },
+    /** Play at this bpm without changing the pattern (null = pattern bpm). */
+    setTempoOverride(bpm) {
+      tempoOverride = bpm == null ? null : clampBpm(bpm, pattern.bpm);
+    },
     onStateChange(cb) {
       stateListeners.add(cb);
       return () => stateListeners.delete(cb);

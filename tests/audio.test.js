@@ -612,3 +612,55 @@ describe('headroom, timing, slides', () => {
     }
   });
 });
+
+describe('aligned start', () => {
+  const ticks = () => new Promise((r) => setTimeout(r, 80));
+
+  it('start({ at }) puts step 0 exactly there', async () => {
+    const { ctx, ctl } = instrumentedContext();
+    const engine = createEngine({ context: ctx });
+    engine.setPattern({ ...preset, bpm: 120 });
+    const p = engine.start({ at: 0.5 });
+    expect(engine.start()).toBe(p); // a start in progress is shared
+    await p;
+    expect(engine.getNextBarTime(0)).toBe(0.5);
+    ctl.now = 0.45;
+    await ticks();
+    const starts = ctl.sources.map((s) => s.start).filter((t) => t !== null);
+    expect(starts.length).toBeGreaterThan(0);
+    expect(Math.min(...starts)).toBe(0.5);
+    expect(Math.round(0.5 * SR)).toBe(22050);
+    expect(engine.getNextBarTime(0.6)).toBeCloseTo(2.5, 9);
+    engine.stop();
+  });
+
+  it('setEndTime stops scheduling at the end of the take', async () => {
+    const { ctx, ctl } = instrumentedContext();
+    const engine = createEngine({ context: ctx });
+    engine.setPattern({ ...preset, bpm: 120 });
+    await engine.start({ at: 0.1 });
+    engine.setEndTime(2.1); // one bar
+    for (const now of [0.5, 1, 1.5, 2, 2.5, 3]) { ctl.now = now; await ticks(); }
+    const starts = ctl.sources.map((s) => s.start).filter((t) => t !== null);
+    expect(Math.max(...starts)).toBeLessThan(2.1);
+    expect(Math.max(...starts)).toBeGreaterThan(1.5);
+    engine.stop();
+  });
+
+  it('tempo override leaves the pattern alone', async () => {
+    const { ctx } = instrumentedContext();
+    const engine = createEngine({ context: ctx });
+    engine.setPattern({ ...preset, bpm: 90 });
+    const changes = vi.fn();
+    engine.onPatternChange(changes);
+    engine.setTempoOverride(120);
+    await engine.start({ at: 0.2 });
+    expect(engine.getNextBarTime(0.3)).toBeCloseTo(2.2, 9);
+    expect(engine.clock.bpm).toBe(90);
+    expect(engine.getPattern().bpm).toBe(90);
+    engine.setTempoOverride(null);
+    expect(engine.clock.secondsPerStep).toBeCloseTo(60 / 90 / 4, 9);
+    expect(changes).not.toHaveBeenCalled();
+    engine.stop();
+  });
+});

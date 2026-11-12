@@ -7,7 +7,8 @@ import { normalizePattern } from './pattern.js';
 
 /**
  * @param {object} [opts] bars, sampleRate, channels, tail (s), tracks (ids to keep),
- *   masterChain (false = straight to destination), OfflineAudioContext (constructor)
+ *   masterChain (false = straight to destination), OfflineAudioContext (constructor),
+ *   setup(ctx, bus) to add extra sources (may be async)
  * @returns {Promise<AudioBuffer>}
  */
 export async function renderPatternOffline(pattern, opts = {}) {
@@ -39,5 +40,6 @@ export async function renderPatternOffline(pattern, opts = {}) {
     const step = i % STEPS;
     playStep(ctx, mixer.inputs, p, step, i * spb + swingOffset(step, p.swing, spb), voices);
   }
+  if (opts.setup) await opts.setup(ctx, bus);
   return ctx.startRendering();
 }
