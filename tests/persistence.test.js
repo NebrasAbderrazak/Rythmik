@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import {
   STORAGE_KEY,
+  BROKEN_KEY,
   savePattern,
   loadSavedPattern,
   createAutosave,
@@ -33,9 +34,9 @@ function throwingStorage() {
 
 function samplePattern() {
   const p = emptyPattern(123);
-  p.steps.kick[0] = true;
-  p.steps.bass[4] = true;
-  p.bassNotes[4] = 36;
+  const A = p.sections.A.steps;
+  A.kick[0] = { v: 1, r: 2, c: 0.5, p: 3, f: true };
+  A.bass[4] = { v: 0.8, r: 1, c: 1, p: 36, f: false };
   p.swing = 0.3;
   p.mixer.snare.mute = true;
   return p;
@@ -52,11 +53,25 @@ describe('savePattern / loadSavedPattern', () => {
     expect(storage.map.has(STORAGE_KEY)).toBe(true);
     const loaded = loadSavedPattern(storage);
     expect(loaded.bpm).toBe(123);
-    expect(loaded.steps.kick[0]).toBe(true);
-    expect(loaded.steps.bass[4]).toBe(true);
-    expect(loaded.bassNotes[4]).toBe(36);
+    expect(loaded.version).toBe(4);
+    expect(loaded.sections.A.steps.kick[0]).toEqual({ v: 1, r: 2, c: 0.5, p: 3, f: true });
+    expect(loaded.sections.A.steps.bass[4]).toMatchObject({ p: 36 });
     expect(loaded.swing).toBeCloseTo(0.3);
     expect(loaded.mixer.snare.mute).toBe(true);
+  });
+
+  it('upgrades a beat saved by an older version', () => {
+    const storage = memoryStorage();
+    const steps = { kick: [true, ...new Array(15).fill(false)], bass: new Array(16).fill(false) };
+    steps.bass[4] = true;
+    const notes = new Array(16).fill(33);
+    notes[4] = 36;
+    storage.map.set(STORAGE_KEY, JSON.stringify({ version: 3, bpm: 95, steps, bassNotes: notes }));
+    const loaded = loadSavedPattern(storage);
+    expect(loaded.version).toBe(4);
+    expect(loaded.chain).toEqual(['A']);
+    expect(loaded.sections.A.steps.kick[0]).toBeTruthy();
+    expect(loaded.sections.A.steps.bass[4].p).toBe(36);
   });
 
   it('returns null when nothing is saved', () => {
@@ -74,6 +89,16 @@ describe('savePattern / loadSavedPattern', () => {
       storage.map.set(STORAGE_KEY, junk);
       expect(loadSavedPattern(storage)).toBeNull();
     }
+  });
+
+  it('keeps an unreadable saved beat under its own key and says so', () => {
+    const storage = memoryStorage();
+    storage.map.set(STORAGE_KEY, '{"version": 4, "sections": ');
+    const onBroken = vi.fn();
+    expect(loadSavedPattern(storage, { onBroken })).toBeNull();
+    expect(onBroken).toHaveBeenCalledTimes(1);
+    expect(storage.map.get(BROKEN_KEY)).toBe('{"version": 4, "sections": ');
+    expect(storage.map.get(STORAGE_KEY)).toBe('{"version": 4, "sections": ');
   });
 
   it('handles a storage that throws', () => {

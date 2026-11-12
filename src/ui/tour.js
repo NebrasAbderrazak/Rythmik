@@ -3,8 +3,9 @@ import { el, placeNear } from './dom.js';
 
 export const TOUR_STEPS = [
   { anchor: 'pads', title: 'Tap the pads', text: 'Each row is a sound. Tap a pad to switch that sound on at that step; lit pads play.' },
+  { anchor: 'modes', title: 'Shape the hits', text: 'Switch the edit mode to Velocity or Roll, then tap lit pads to make them softer, harder or rolling.' },
   { anchor: 'play', title: 'Press Play', text: 'Play starts the loop and Stop ends it. The Space bar works too.' },
-  { anchor: 'presets', title: 'Try a preset', text: 'Not sure where to start? Load a ready-made groove and change it to make it yours.' },
+  { anchor: 'presets', title: 'Try a preset', text: 'Not sure where to start? Pick a genre, load a ready-made groove and change it to make it yours.' },
   { anchor: 'booth', title: 'Rap over it', text: 'When the beat feels right, open BOOTH to record yourself over it.' },
   { anchor: 'remix', title: 'Remix a song', text: 'Open REMIX to load your own song, make a slowed + reverb version and rap over that instead.' },
 ];

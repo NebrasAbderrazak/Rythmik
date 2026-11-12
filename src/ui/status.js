@@ -12,6 +12,7 @@ export function createStatus() {
   let timer = 0;
   let returnFocus = null;
   let undoFn = null;
+  let locked = false;
 
   function clear() {
     clearTimeout(timer);
@@ -40,7 +41,7 @@ export function createStatus() {
   undoBtn.addEventListener('click', () => {
     const fn = undoFn;
     const back = returnFocus;
-    if (!fn) return;
+    if (!fn || locked) return;
     fn();
     returnFocus = null;
     clear();
@@ -52,6 +53,11 @@ export function createStatus() {
     el: node,
     show,
     clear,
+    /** While a take records, Undo stays visible but cannot be pressed. */
+    setLocked(on) {
+      locked = !!on;
+      undoBtn.disabled = locked;
+    },
     get undoActive() {
       return !!undoFn;
     },

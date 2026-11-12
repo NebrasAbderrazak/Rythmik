@@ -3,7 +3,8 @@ import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { parseRoute, routeHash, ROUTES, DEFAULT_ROUTE } from '../src/ui/router.js';
 import { ADVANCED_KEY, TOURED_KEY, loadAdvanced, saveAdvanced, hasToured, markToured } from '../src/ui/settings.js';
-import { HELP, HELP_KEYS, GUIDE_SECTIONS, GUIDE_RECIPES, PRESET_INFO } from '../src/ui/help.js';
+import { HELP, HELP_KEYS, GUIDE_SECTIONS, GUIDE_RECIPES } from '../src/ui/help.js';
+import { SAMPLER_HELP } from '../src/ui/help-sampler.js';
 import { PRESETS } from '../src/audio/presets.js';
 
 function memoryStorage() {
@@ -115,6 +116,11 @@ describe('help dictionary', () => {
     'remixMarkStart', 'remixMarkEnd', 'remixSlowedReverb', 'remixNightcore', 'remixOriginal', 'remixSpeed', 'remixSpeedFine', 'remixKeepPitch',
     'remixSpace', 'remixMuffle', 'remixBass', 'remixVolume', 'remixSongBpm', 'remixTap',
     'remixManualBpm', 'remixHalfDouble', 'remixBeatSync', 'remixExport', 'remixExportRange',
+    'presetGenre', 'presetOriginal', 'editMode', 'modeOnOff', 'modeVelocity', 'modeRoll', 'modeChance', 'modePitch', 'modeFlam',
+    'pitchEdit', 'sections', 'addB', 'removeB', 'stepLength', 'barPage', 'chainSimple', 'chain',
+    'humanize', 'randomize', 'autoFill', 'clearTrack', 'toolTrack', 'addTrack', 'editTracks', 'removeTrack', 'moveTrack',
+    'missingSample', 'trackFeel', 'trackSwing', 'trackNudge', 'projectFile',
+    ...Object.keys(SAMPLER_HELP),
   ];
 
   it('every control id has help text and a ? in the UI', () => {
@@ -140,9 +146,15 @@ describe('help dictionary', () => {
     }
   });
 
-  it('describes every preset and has recipes', () => {
-    for (const key of Object.keys(PRESETS)) expect(PRESET_INFO[key], key).toBeTruthy();
-    expect(GUIDE_RECIPES.length).toBeGreaterThanOrEqual(4);
-    expect(GUIDE_RECIPES.some((r) => r.title === 'Get the robot voice')).toBe(true);
+  it('every preset has a description and the guide has the groove recipes', () => {
+    for (const p of Object.values(PRESETS)) expect(p.description, p.id).toMatch(/.$/);
+    expect(GUIDE_RECIPES.length).toBeGreaterThanOrEqual(6);
+    for (const title of ['Get the robot voice', 'Make a trap hi-hat roll', 'Add a fill every 4 bars']) {
+      expect(GUIDE_RECIPES.some((r) => r.title === title), title).toBe(true);
+    }
+  });
+
+  it('merges the sampler help into HELP', () => {
+    for (const key of Object.keys(SAMPLER_HELP)) expect(HELP[key]).toBe(SAMPLER_HELP[key]);
   });
 });

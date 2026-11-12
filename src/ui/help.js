@@ -1,4 +1,5 @@
 // Plain-language help for every control. Pure data: also read by the Guide view and tests.
+import { SAMPLER_HELP, SAMPLER_GUIDE } from './help-sampler.js';
 
 export const HELP = {
   modeBeat: {
@@ -33,17 +34,17 @@ export const HELP = {
   advanced: {
     term: 'Advanced',
     sub: 'all controls',
-    text: 'Shows the extra controls for fine-tuning: swing, volumes, mute, solo, 808 notes, effect details, voice tuning, latency and remix speed.',
+    text: 'Shows the extra controls: swing, volumes, mute, solo, notes, chance, pitch and flam modes, the chain, track feel, effect details, voice tuning and remix speed.',
   },
   presets: {
     term: 'Presets',
     sub: 'ready-made beats',
-    text: 'Loads a finished groove to play with or change; it replaces your pads, and Undo brings yours back for a few seconds.',
+    text: 'Loads a finished groove from the chosen genre to play with or change; it replaces your beat, and Undo brings yours back for a few seconds.',
   },
   pads: {
     term: 'Pads',
     sub: '16 steps per bar',
-    text: 'Each row is one sound and each pad is one step of the bar; lit pads play when the moving light passes them.',
+    text: 'Each row is one sound and each pad is one step of the bar; lit pads play when the moving light passes them, and brighter pads hit harder.',
   },
   sounds: {
     term: 'Sound names',
@@ -78,7 +79,7 @@ export const HELP = {
   bassNotes: {
     term: '808 notes',
     sub: 'bass pitch',
-    text: 'Picks the pitch of the 808 bass on each step; without Advanced every step keeps the note the preset gave it.',
+    text: 'Picks the note of the 808 bass or log drum on each step; without Advanced every step keeps the note the preset gave it.',
   },
   exportBeat: {
     term: 'Export beat',
@@ -88,12 +89,167 @@ export const HELP = {
   beatBars: {
     term: 'Bars',
     sub: 'file length',
-    text: 'How many times the one-bar pattern repeats in the exported file (one bar is four beats).',
+    text: 'How long the exported file is, in bars of four beats; the loop with its sections repeats to fill it.',
   },
   patternFile: {
     term: 'Pattern file',
     sub: 'JSON',
     text: 'Export saves your pads and settings as a small file, and Import loads one back, so you can keep or share beats.',
+  },
+  presetGenre: {
+    term: 'Genre',
+    sub: 'filter presets',
+    text: 'Shows only the presets of one style, so you can find a groove for the kind of song you want.',
+  },
+  presetOriginal: {
+    term: 'Original',
+    sub: 'made for Rythmik',
+    text: 'Marks grooves made just for Rythmik rather than typical patterns of a genre.',
+  },
+  editMode: {
+    term: 'Edit mode',
+    sub: 'what a tap does',
+    text: 'Chooses what tapping a pad changes: on or off, how hard it hits, rolls, and in Advanced chance, pitch and flams.',
+  },
+  modeOnOff: {
+    term: 'On/off',
+    sub: 'tap to switch',
+    text: 'Tapping a pad switches that sound on or off at that step.',
+  },
+  modeVelocity: {
+    term: 'Velocity',
+    sub: 'how hard',
+    text: 'Tapping a lit pad cycles it between soft, normal and accent; brighter pads hit harder.',
+  },
+  modeRoll: {
+    term: 'Roll',
+    sub: 'fast repeats',
+    text: 'Tapping a lit pad cycles 1 to 4 quick hits inside that step, like the rolling hi-hats in trap.',
+  },
+  modeChance: {
+    term: 'Chance',
+    sub: 'maybe it plays',
+    text: 'Tapping a lit pad cycles how often it plays on each loop (100, 75, 50 or 25%), so the beat changes a little every time.',
+  },
+  modePitch: {
+    term: 'Pitch',
+    sub: 'tune a step',
+    text: 'Tap a pad, then use the minus and plus keys to tune that one hit up or down.',
+  },
+  modeFlam: {
+    term: 'Flam',
+    sub: 'double hit',
+    text: 'Tapping a lit pad adds or removes a flam: a softer extra hit just before the main one.',
+  },
+  pitchEdit: {
+    term: 'Step pitch',
+    sub: 'selected pad',
+    text: 'Tunes the selected pad in semitones, or picks its note for the 808 and log drum; Reset puts it back to normal.',
+  },
+  sections: {
+    term: 'Sections',
+    sub: 'A and B',
+    text: 'A beat can have two parts, A and B; these keys choose which one the pads show and edit.',
+  },
+  addB: {
+    term: 'Add B',
+    sub: 'second part',
+    text: 'Makes section B as a copy of A, so you can change it into a variation or a fill.',
+  },
+  removeB: {
+    term: 'Remove B',
+    sub: 'one part only',
+    text: 'Deletes section B and plays A only; Undo brings it back for a few seconds.',
+  },
+  stepLength: {
+    term: 'Steps',
+    sub: '16 or 32',
+    text: 'Sets the length of the section you edit: 16 steps is one bar, 32 is two bars, and going to 32 copies the first bar.',
+  },
+  barPage: {
+    term: 'Bar',
+    sub: 'which half',
+    text: 'With 32 steps the pads show one bar at a time; these keys switch between bar 1 and bar 2.',
+  },
+  chainSimple: {
+    term: 'Play A then B',
+    sub: 'loop order',
+    text: 'When on, the loop plays section A and then section B; when off, it repeats A only.',
+  },
+  chain: {
+    term: 'Chain',
+    sub: 'loop order',
+    text: 'The order the sections play in, up to 8 slots: tap a slot to switch it between A and B.',
+  },
+  humanize: {
+    term: 'Humanize',
+    sub: 'less robotic',
+    text: 'Changes every hit very slightly in loudness and timing so the beat feels played by a person.',
+  },
+  randomize: {
+    term: 'Randomize',
+    sub: 'new ideas',
+    text: 'Writes a fresh random pattern for the chosen track in the section you edit; press again for another idea.',
+  },
+  autoFill: {
+    term: 'Auto fill',
+    sub: 'every 4 bars',
+    text: 'Makes section B a copy of A with a drum fill at the end and plays A three times, then B.',
+  },
+  clearTrack: {
+    term: 'Clear track',
+    sub: 'empty one row',
+    text: 'Switches off every pad of the chosen track in the section you edit.',
+  },
+  toolTrack: {
+    term: 'Track',
+    sub: 'for the tools',
+    text: 'The track that Randomize and Clear track change; it follows the last row you tapped.',
+  },
+  addTrack: {
+    term: 'Add track',
+    sub: 'more sounds',
+    text: 'Adds a new row with another drum, percussion or bass sound, or one of your samples, up to 16 rows.',
+  },
+  editTracks: {
+    term: 'Edit tracks',
+    sub: 'remove rows',
+    text: 'Shows a remove key on every row, and in Advanced keys to move rows up and down.',
+  },
+  removeTrack: {
+    term: 'Remove',
+    sub: 'delete a row',
+    text: 'Takes the sound and its pads out of the beat; Undo brings it back for a few seconds.',
+  },
+  moveTrack: {
+    term: 'Move',
+    sub: 'row order',
+    text: 'Moves a row up or down in the list; it does not change how the beat sounds.',
+  },
+  missingSample: {
+    term: 'Missing sample',
+    sub: 'silent row',
+    text: 'This row uses a sample that is not in this browser, so it stays silent until you import its project file or remove it.',
+  },
+  trackFeel: {
+    term: 'Track feel',
+    sub: 'per sound',
+    text: 'Gives single sounds their own swing or pushes them a little early or late against the grid.',
+  },
+  trackSwing: {
+    term: 'Track swing',
+    sub: 'own swing',
+    text: 'Swing for this sound only; at the far left it follows the main Swing knob.',
+  },
+  trackNudge: {
+    term: 'Nudge',
+    sub: 'early or late',
+    text: 'Moves every hit of this sound slightly early (left) or late (right), up to half a step.',
+  },
+  projectFile: {
+    term: 'Project file',
+    sub: 'beat + samples',
+    text: 'Export project saves the pattern together with the samples it uses in one file, and Import project loads it back.',
   },
   input: {
     term: 'Input',
@@ -402,21 +558,27 @@ export const HELP = {
   },
 };
 
-export const HELP_KEYS = Object.keys(HELP);
+for (const [key, entry] of Object.entries(SAMPLER_HELP)) {
+  if (!(key in HELP)) HELP[key] = entry;
+}
 
-export const PRESET_INFO = {
-  afroBass: 'bouncy afrobeats groove',
-  trap: 'rolling hats and deep 808, made for fast flows',
-  boomBap: 'dusty 90s head-nod groove',
-  empty: 'clears every pad so you can start from scratch',
-};
+export const HELP_KEYS = Object.keys(HELP);
 
 export const GUIDE_SECTIONS = [
   {
     id: 'beat',
     title: 'Making a beat',
-    keys: ['modeBeat', 'play', 'tempo', 'presets', 'undo', 'pads', 'sounds', 'exportBeat', 'beatBars', 'patternFile'],
+    keys: ['modeBeat', 'play', 'tempo', 'presets', 'presetGenre', 'presetOriginal', 'undo', 'pads', 'sounds', 'exportBeat', 'beatBars', 'patternFile'],
   },
+  {
+    id: 'grooves',
+    title: 'Shaping the groove',
+    keys: [
+      'editMode', 'modeOnOff', 'modeVelocity', 'modeRoll', 'sections', 'addB', 'stepLength', 'barPage', 'chainSimple',
+      'humanize', 'randomize', 'autoFill', 'clearTrack', 'toolTrack', 'addTrack', 'editTracks', 'removeTrack', 'missingSample',
+    ],
+  },
+  ...(SAMPLER_GUIDE?.section ? [SAMPLER_GUIDE.section] : []),
   {
     id: 'booth',
     title: 'Recording in the booth',
@@ -441,7 +603,9 @@ export const GUIDE_SECTIONS = [
     id: 'advanced',
     title: 'Advanced controls',
     keys: [
-      'advanced', 'swing', 'master', 'volume', 'mute', 'solo', 'bassNotes', 'fxEchoTime', 'fxFilter', 'fxDrive', 'fxSends',
+      'advanced', 'swing', 'master', 'volume', 'mute', 'solo', 'bassNotes',
+      'modeChance', 'modePitch', 'modeFlam', 'pitchEdit', 'removeB', 'chain', 'moveTrack', 'trackFeel', 'trackSwing', 'trackNudge', 'projectFile',
+      'fxEchoTime', 'fxFilter', 'fxDrive', 'fxSends',
       'voiceKey', 'voiceScale', 'voiceTune', 'voiceRetune', 'voiceReverb', 'voiceEcho', 'latency', 'latencyOffset',
       'remixSpeedFine', 'remixKeepPitch', 'remixManualBpm',
     ],
@@ -452,11 +616,31 @@ export const GUIDE_RECIPES = [
   {
     title: 'Make your first beat',
     steps: [
-      'In BEAT, press a preset such as Afro bass, or Empty to start clean.',
+      'In BEAT, pick a genre and press a preset such as Afro bass, or Empty to start clean.',
       'Press Play (or Space).',
       'Tap pads to switch sounds on and off while it loops.',
       'Move Tempo until the speed feels right.',
       'Your beat is saved in this browser automatically.',
+    ],
+  },
+  {
+    title: 'Make a trap hi-hat roll',
+    steps: [
+      'In BEAT, pick Hip-hop and load Trap, or switch on a closed hat on every second step.',
+      'Press Play, then press the Roll edit mode key above the pads.',
+      'Tap a lit hi-hat pad near the end of the bar: each tap adds a hit, from 1 up to 4, then back to 1.',
+      'Try 3 on one step and 2 on the next for the classic trap stutter.',
+      'Press Velocity and tap some hats to make them softer, so the roll breathes.',
+    ],
+  },
+  {
+    title: 'Add a fill every 4 bars',
+    steps: [
+      'Make a beat you like in section A.',
+      'Press Auto fill under the pads: section B becomes A with a drum fill at the end.',
+      'The loop now plays A three times, then B, so the fill lands on every fourth bar.',
+      'Press B to see and change the fill, or Undo if you do not like it.',
+      'In Advanced, the Chain slots let you change the order, for example A B A B.',
     ],
   },
   {
@@ -498,4 +682,5 @@ export const GUIDE_RECIPES = [
       'Export the mix in step 5, or Export remix in REMIX for the song alone.',
     ],
   },
+  ...(SAMPLER_GUIDE?.recipe ? [SAMPLER_GUIDE.recipe] : []),
 ];

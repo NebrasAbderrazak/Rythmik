@@ -61,7 +61,7 @@ describe('beat effects', () => {
     expect(shown(filter)).toBe(true);
     expect(shown(q('[aria-labelledby="rk-fx-drive-label"]'))).toBe(true);
     expect(shown(q('#rk-fx-echotime'))).toBe(true);
-    expect(document.querySelectorAll('.rk-send').length).toBe(8);
+    expect(document.querySelectorAll('.rk-sends:not(.rk-feel) .rk-send').length).toBe(engine.getPattern().tracks.length);
     setAdvanced(false);
   });
 

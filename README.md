@@ -4,10 +4,18 @@ Make beats in your browser, then rap over them. A step sequencer with a synthesi
 
 ## Features
 **Beat**
-- 8 synthesized tracks: Kick, Snare, Clap, Closed hat, Open hat, Rim, Shaker, 808 bass
-- 16-step grid, presets (Afro bass, Trap, Boom bap, Empty), tempo 60 to 180 BPM
+- 16 synthesized sounds: kick, snare, clap, hats, rim, shaker, toms, crash, ride, cowbell, conga, snap, 808 and an amapiano log drum
+- 35 presets across hip-hop, afro, latin, electronic and more, plus Rythmik originals
+- 16 or 32 steps, A/B sections you can chain, up to 16 tracks, tempo 60 to 180 BPM
+- Per step: velocity, hi-hat rolls, chance, pitch and flam; per track: swing and nudge
+- Humanize, Randomize and Auto fill
 - Effects: Space (reverb) and Echo, plus Filter, Drive and per-track sends
 - Export the beat as WAV, export / import patterns as JSON, autosave in your browser
+
+**Samples**
+- Record a sound, load a file or cut a word from a Booth take, then chop it into slices
+- Trim, fade, pitch and reverse, and play your sounds as tracks in the beat
+- Sounds are kept in your browser; export a project file to move a beat with its sounds
 
 **Booth**
 - Pick your mic, record over the looping beat with a count-in, keep multiple takes

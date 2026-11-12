@@ -1,8 +1,10 @@
 import { MIN_BPM, MAX_BPM } from '../audio/engine.js';
 import { PRESETS } from '../audio/presets.js';
 import { createRemix } from '../audio/remix.js';
+import { createSampler } from '../audio/sampler.js';
 import { mountBeat } from './beat.js';
 import { mountBooth } from './booth.js';
+import { mountSampler } from './sampler.js';
 import { mountRemix } from './remix.js';
 import { mountGuide } from './guide.js';
 import { createTour } from './tour.js';
@@ -18,7 +20,7 @@ const MODE_HELP = { beat: 'modeBeat', booth: 'modeBooth', remix: 'modeRemix' };
 const SPACE_OWNERS = 'button, a[href], select, input[type=radio], input[type=checkbox], [role=switch], [role=button], [role=slider], .rk-tour';
 
 const VIEW_INFO = {
-  beat: { title: 'Beat', intro: 'Build a one-bar loop: tap pads, press Play, change the tempo.' },
+  beat: { title: 'Beat', intro: 'Pick a preset or start empty, tap pads, press Play, change the tempo.' },
   booth: { title: 'Booth', intro: 'Record yourself over the beat in five steps.' },
   remix: { title: 'Remix', intro: 'Load your own song, slow it down or speed it up, add space, then rap over it in BOOTH.' },
   guide: { title: 'Guide', intro: 'Short, plain explanations of every control, plus a few how-tos.' },
@@ -32,7 +34,8 @@ export function mountApp(root, engine) {
   let remixTake = false; // a take over the remix: the transport key cancels it
 
   // pattern lifecycle (before any view renders)
-  engine.setPattern(loadSavedPattern(storage) ?? PRESETS.afroBass.pattern);
+  let savedBroken = false;
+  engine.setPattern(loadSavedPattern(storage, { onBroken: () => (savedBroken = true) }) ?? PRESETS.afroBass.pattern);
   const status = createStatus();
   let applyingLoad = false; // setPattern from a load is not a user edit
 
@@ -45,10 +48,34 @@ export function mountApp(root, engine) {
     }
   }
 
-  function loadWithUndo(pattern, msg, trigger) {
+  function loadWithUndo(pattern, msg, trigger, { undo = true, onUndo = null } = {}) {
     const previous = engine.getPattern();
     applyPattern(pattern);
-    status.show(msg, { undo: () => applyPattern(previous), focusBack: trigger });
+    if (!undo) {
+      status.show(msg);
+      return;
+    }
+    const restore = () => {
+      applyPattern(previous);
+      onUndo?.();
+    };
+    status.show(msg, { undo: restore, focusBack: trigger });
+  }
+
+  // An edit through an engine call that Undo can take back (remove a track, shorten a section).
+  function editWithUndo(action, msg, trigger, { onUndo = null } = {}) {
+    const previous = engine.getPattern();
+    applyingLoad = true;
+    try {
+      action();
+    } finally {
+      applyingLoad = false;
+    }
+    const restore = () => {
+      applyPattern(previous);
+      onUndo?.();
+    };
+    status.show(msg, { undo: restore, focusBack: trigger });
   }
 
   // header
@@ -133,18 +160,50 @@ export function mountApp(root, engine) {
 
   // One deck for the whole app: REMIX plays it, the booth records over it.
   const remix = createRemix(engine);
-  const beatView = mountBeat(engine, { status, loadWithUndo, afterAudio: renderAudioNote });
-  const remixView = mountRemix(remix, { storage });
+  let sampler = null;
   const boothView = mountBooth(engine, {
     remix,
     onLockChange: setBoothLock,
     isActive: () => route === 'booth',
+    getSampler: () => sampler,
   });
+  sampler = makeSampler(boothView.booth);
+  const beatView = mountBeat(engine, { status, loadWithUndo, editWithUndo, sampler, afterAudio: renderAudioNote });
+  beatView.setAdvanced(advanced);
+  const remixView = mountRemix(remix, { storage });
+  const samplerView = sampler ? mountSamplerSafe() : null;
+
+  function makeSampler(booth) {
+    if (typeof createSampler !== 'function' || typeof engine.addTrack !== 'function') return null;
+    try {
+      const s = createSampler(engine, { booth });
+      // saved sounds come back in the background; rows show "missing" until then
+      Promise.resolve(s.restore?.()).catch((err) => console.error('Rythmik: could not restore samples', err));
+      return s;
+    } catch (err) {
+      console.error('Rythmik: sampler unavailable', err);
+      return null;
+    }
+  }
+
+  function mountSamplerSafe() {
+    if (typeof mountSampler !== 'function') return null;
+    try {
+      const v = mountSampler(sampler, engine, { booth: boothView.booth });
+      if (v?.el) beatView.anchors.samplerSlot.append(v.el);
+      return v;
+    } catch (err) {
+      console.error('Rythmik: sampler panel failed', err);
+      return null;
+    }
+  }
+
   const tour = createTour({
     anchors: {
       pads: beatView.anchors.pads,
       play: playBtn,
       presets: beatView.anchors.presets,
+      modes: beatView.anchors.modes,
       booth: modeLinks.booth,
       remix: modeLinks.remix,
     },
@@ -165,7 +224,7 @@ export function mountApp(root, engine) {
   const footer = el('footer', { class: 'rk-foot' }, [
     el('p', { class: 'rk-keys' }, [
       kbd('Space'), text(' play / stop  '),
-      kbd('Arrows'), text(' move between pads  '),
+      kbd('Arrows'), text(' move between pads (and bars)  '),
       kbd('Enter'), text(' toggle pad  '),
       kbd('R'), text(' record (Booth)  '),
       kbd('Esc'), text(' cancel / close  '),
@@ -214,6 +273,7 @@ export function mountApp(root, engine) {
     renderRec();
     renderDeck();
     beatView.setActive(next === 'beat');
+    samplerView?.setActive?.(next === 'beat');
     boothView.setActive();
     remixView.setActive(next === 'remix');
     if (focus) views[next].querySelector('.rk-view__title')?.focus();
@@ -245,6 +305,7 @@ export function mountApp(root, engine) {
   function setAdvanced(on) {
     advanced = on;
     machine.dataset.advanced = String(on);
+    beatView.setAdvanced(on);
     advSwitch.setAttribute('aria-checked', String(on));
     saveAdvanced(storage, on);
   }
@@ -259,6 +320,8 @@ export function mountApp(root, engine) {
     for (const c of [bpmNumber, bpmRange]) c.disabled = on;
     playBtn.disabled = on && !remixTake;
     lockMark.hidden = !on;
+    // Undo would swap the pattern under the take, like a preset load
+    status.setLocked(on);
     beatView.setLocked(on);
     remixView.setLocked(on);
     renderPlaying(engine.isPlaying);
@@ -426,6 +489,7 @@ export function mountApp(root, engine) {
   });
 
   applyRoute(parseRoute(location.hash));
+  if (savedBroken) status.show('Your saved beat could not be read, so a preset was loaded. A copy of it is kept in this browser.', { error: true });
   renderBpm(engine.getPattern().bpm);
   renderPlaying(engine.isPlaying);
   renderDeck();

@@ -1,35 +1,128 @@
-// Stand-ins for the engine, booth and remix deck so the UI can mount without Web Audio.
+// Stand-ins for the engine, booth, sampler and remix deck so the UI can mount without Web Audio.
 import { vi } from 'vitest';
-import { normalizePattern, emptyPattern } from '../../src/audio/pattern.js';
+import { normalizePattern, emptyPattern, normalizeStep, defaultStep } from '../../src/audio/pattern.js';
 import { VOICE_PRESETS } from '../../src/audio/voice.js';
 
+const MAX_TRACKS = 16;
+const MAX_CHAIN = 8;
+
+// Follows the pattern v4 engine contract (docs/ENGINE_API.md) on plain pattern data.
 export function fakeEngine() {
   let pattern = normalizePattern(emptyPattern(100));
+  let editSection = 'A';
   const patternCbs = [];
   const stateCbs = [];
   const emitState = () => stateCbs.forEach((cb) => cb({ isPlaying: engine.isPlaying, bpm: pattern.bpm }));
   const emitPattern = () => patternCbs.forEach((cb) => cb(structuredClone(pattern)));
+  const commit = () => {
+    pattern = normalizePattern(pattern);
+    if (!pattern.sections[editSection]) editSection = 'A';
+    emitPattern();
+  };
+  const section = () => pattern.sections[editSection] || pattern.sections.A;
   const engine = {
     context: null,
     isPlaying: false,
-    setPattern(p) {
+    /** what getPlayPosition() returns while playing; tests set it */
+    playPosition: null,
+    setPattern: vi.fn((p) => {
       pattern = normalizePattern(p);
+      if (!pattern.sections[editSection]) editSection = 'A';
       emitPattern();
-    },
+    }),
     getPattern: () => structuredClone(pattern),
-    toggleStep(t, i) {
-      pattern.steps[t][i] = !pattern.steps[t][i];
+    addTrack: vi.fn((id) => {
+      if (pattern.tracks.includes(id) || pattern.tracks.length >= MAX_TRACKS) return false;
+      pattern.tracks.push(id);
+      commit();
+      return pattern.tracks.includes(id);
+    }),
+    removeTrack: vi.fn((id) => {
+      if (!pattern.tracks.includes(id) || pattern.tracks.length < 2) return false;
+      pattern.tracks = pattern.tracks.filter((t) => t !== id);
+      commit();
+      return true;
+    }),
+    moveTrack: vi.fn((id, to) => {
+      const from = pattern.tracks.indexOf(id);
+      if (from < 0) return false;
+      pattern.tracks.splice(from, 1);
+      pattern.tracks.splice(Math.max(0, Math.min(pattern.tracks.length, to)), 0, id);
+      commit();
+      return true;
+    }),
+    toggleStep: vi.fn((id, i) => {
+      const row = section().steps[id];
+      row[i] = row[i] ? null : defaultStep(id, i);
       emitPattern();
-      return pattern.steps[t][i];
+      return !!row[i];
+    }),
+    setStep: vi.fn((id, i, partial) => {
+      const row = section().steps[id];
+      row[i] = partial === null ? null : normalizeStep({ ...(row[i] || defaultStep(id, i)), ...partial }, id, i);
+      emitPattern();
+      return row[i] ? { ...row[i] } : null;
+    }),
+    getStep: (id, i) => {
+      const s = section().steps[id]?.[i];
+      return s ? { ...s } : null;
     },
-    setBassNote() {},
-    trigger() {},
+    get editSection() {
+      return editSection;
+    },
+    setEditSection: vi.fn((name) => {
+      if (pattern.sections[name]) editSection = name;
+      return editSection;
+    }),
+    setSectionLength: vi.fn((name, len) => {
+      const sec = pattern.sections[name];
+      if (!sec || sec.length === len) return;
+      for (const id of Object.keys(sec.steps)) {
+        const row = sec.steps[id];
+        sec.steps[id] = len > sec.length ? [...row, ...structuredClone(row)] : row.slice(0, len);
+      }
+      sec.length = len;
+      commit();
+    }),
+    setSectionB: vi.fn((on, { copyFrom = 'A' } = {}) => {
+      if (on) {
+        pattern.sections.B = structuredClone(pattern.sections[copyFrom] || pattern.sections.A);
+      } else {
+        pattern.sections.B = null;
+        pattern.chain = ['A'];
+      }
+      commit();
+    }),
+    setChain: vi.fn((list) => {
+      pattern.chain = list.filter((n) => pattern.sections[n]).slice(0, MAX_CHAIN);
+      commit();
+      return [...pattern.chain];
+    }),
+    setTrackSwing: vi.fn((id, x) => {
+      pattern.mixer[id].swing = x;
+      commit();
+      return x;
+    }),
+    setTrackNudge: vi.fn((id, x) => {
+      pattern.mixer[id].nudge = x;
+      commit();
+      return x;
+    }),
+    getPlayPosition: () => (engine.isPlaying ? engine.playPosition : null),
+    setBassNote(i, midi) {
+      return engine.setStep('bass', i, { p: midi });
+    },
+    trigger: vi.fn(),
     setBpm(n) {
       pattern.bpm = n;
       emitPattern();
       return n;
     },
-    setSwing() {},
+    setSwing: vi.fn((x) => {
+      pattern.swing = x;
+      emitPattern();
+      return x;
+    }),
     setTrackVolume() {},
     setMute(t, on) {
       pattern.mixer[t].mute = on;
@@ -61,7 +154,7 @@ export function fakeEngine() {
       engine.isPlaying = false;
       emitState();
     }),
-    getCurrentStep: () => -1,
+    getCurrentStep: () => (engine.isPlaying && engine.playPosition ? engine.playPosition.step : -1),
     resume: () => Promise.resolve(),
     onStateChange(cb) {
       stateCbs.push(cb);
@@ -73,6 +166,95 @@ export function fakeEngine() {
     },
   };
   return engine;
+}
+
+// Follows the sampler contract: samples are plain records, project files are JSON text.
+export function fakeSampler(engine = null) {
+  const listeners = [];
+  let count = 0;
+  let sources = [];
+  let samples = [];
+  const emit = () => listeners.forEach((cb) => cb());
+  const addSource = (name, duration = 2) => {
+    const src = { id: `src-${++count}`, name, duration, channels: 1, sampleRate: 48000 };
+    sources.push(src);
+    emit();
+    return src;
+  };
+  const sampler = {
+    get sources() {
+      return sources.map((s) => ({ ...s }));
+    },
+    get samples() {
+      return samples.map((s) => ({ ...s }));
+    },
+    recording: false,
+    previewSourceId: null,
+    fromFile: vi.fn(async (file) => addSource(file?.name ?? 'File')),
+    record: vi.fn(async () => addSource('Mic')),
+    cancelRecord: vi.fn(),
+    fromTake: vi.fn((takeId) => addSource(`Take ${takeId}`)),
+    removeSource: vi.fn((id) => {
+      sources = sources.filter((s) => s.id !== id);
+      emit();
+    }),
+    getPeaks: (id, n) => ({ min: new Float32Array(n), max: new Float32Array(n) }),
+    chop: vi.fn(() => [{ start: 0, end: 0.5 }, { start: 0.5, end: 1 }]),
+    createSample: vi.fn((sourceId, { start = 0, end = 1, name } = {}) => {
+      if (samples.length >= 16) throw new Error('too-many');
+      const id = `smp-${++count}`;
+      samples.push({
+        id, name: name ?? `Sample ${samples.length + 1}`, sourceId, start, end, duration: end - start,
+        gain: 0.8, pitch: 0, reverse: false, fadeIn: 0, fadeOut: 0.01,
+      });
+      emit();
+      return id;
+    }),
+    /** test helper: adds a ready sample with this id */
+    addSample(id, name) {
+      samples.push({ id, name, sourceId: null, start: 0, end: 1, duration: 1, gain: 0.8, pitch: 0, reverse: false, fadeIn: 0, fadeOut: 0.01 });
+      emit();
+    },
+    getSample(id) {
+      const s = samples.find((x) => x.id === id);
+      return s ? { ...s } : null;
+    },
+    update: vi.fn((id, partial) => {
+      samples = samples.map((s) => (s.id === id ? { ...s, ...partial } : s));
+      emit();
+    }),
+    remove: vi.fn((id) => {
+      samples = samples.filter((s) => s.id !== id);
+      engine?.removeTrack?.(id);
+      emit();
+    }),
+    audition: vi.fn(),
+    playRegion: vi.fn(),
+    stopRegion: vi.fn(),
+    save: vi.fn(async () => true),
+    restore: vi.fn(async () => false),
+    exportProject: vi.fn(
+      async (pattern) => new Blob([JSON.stringify({ app: 'rythmik', version: 1, pattern, samples: [] })], { type: 'application/json' }),
+    ),
+    importProject: vi.fn(async (input) => {
+      const text = typeof input === 'string' ? input : await input.text();
+      let data;
+      try {
+        data = JSON.parse(text);
+      } catch {
+        throw new Error('not-a-project');
+      }
+      if (data?.app !== 'rythmik' || !data.pattern) throw new Error('not-a-project');
+      return data.pattern;
+    }),
+    onChange(cb) {
+      listeners.push(cb);
+      return () => {};
+    },
+    emit,
+    dispose() {},
+  };
+  return sampler;
 }
 
 export function fakeBooth() {

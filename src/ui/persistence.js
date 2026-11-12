@@ -3,8 +3,13 @@ import { parsePattern, serializePattern } from '../audio/pattern.js';
 
 // Key kept so saved beats keep loading; the pattern format version lives inside the saved pattern.
 export const STORAGE_KEY = 'rythmik:pattern:v2';
+// a saved beat that could not be read is moved here instead of being overwritten
+export const BROKEN_KEY = 'rythmik:pattern:broken';
 export const EXPORT_FILENAME = 'rythmik-pattern.json';
 export const MAX_IMPORT_BYTES = 256 * 1024;
+// a project carries its samples as WAV: 16 samples of up to 10 s stereo, base64
+export const PROJECT_FILENAME = 'rythmik-project.json';
+export const MAX_PROJECT_BYTES = 64 * 1024 * 1024;
 
 /** Accessing localStorage can throw in privacy modes. */
 export function getDefaultStorage() {
@@ -26,8 +31,11 @@ export function savePattern(pattern, storage = getDefaultStorage()) {
   }
 }
 
-/** Returns null if nothing is saved or the data is unreadable. Never throws. */
-export function loadSavedPattern(storage = getDefaultStorage()) {
+/**
+ * Returns null if nothing is saved or the data is unreadable. Never throws.
+ * Unreadable data is copied to BROKEN_KEY first and onBroken() is called.
+ */
+export function loadSavedPattern(storage = getDefaultStorage(), { onBroken = null } = {}) {
   if (!storage) return null;
   let text;
   try {
@@ -39,6 +47,12 @@ export function loadSavedPattern(storage = getDefaultStorage()) {
   try {
     return parsePattern(text);
   } catch {
+    try {
+      storage.setItem(BROKEN_KEY, text);
+    } catch {
+      // no room to keep a copy
+    }
+    onBroken?.();
     return null;
   }
 }
